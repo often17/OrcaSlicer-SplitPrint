@@ -267,6 +267,21 @@ enum class ImexToolLayout {
     Count,
 };
 
+// SPLITPRINT: axis the two gantries cannot cross on. The split line is perpendicular to it.
+enum class SplitPrintAxis {
+    X,
+    Y,
+    Count,
+};
+
+// SPLITPRINT: how finger lengths vary along the interface between the two heads.
+enum class SplitInterfacePattern {
+    Alternating,
+    Random,
+    Sine,
+    Count,
+};
+
 // IMEX: color theme for the bed-zone visualization. Colorblind-friendly variants
 // are provided for users with color-vision differences.
 enum class ImexVizTheme {
@@ -803,6 +818,9 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NoiseType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(InfillPattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(IroningType)
+// SPLITPRINT
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SplitPrintAxis)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SplitInterfacePattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SlicingMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(BeltRotationAxis)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(RemapAxis)
@@ -1439,6 +1457,17 @@ PRINT_CONFIG_CLASS_DEFINE(
     // Serialized as compact "phys:slot,phys:slot" (1-based filament slots, matches UI).
     // Empty string means "use first_filament_for_physical_head defaults everywhere".
     ((ConfigOptionString,              imex_head_filament_map))
+
+    // SPLITPRINT: two heads print one object at the same time, joined by interlocking fingers.
+    ((ConfigOptionBool,                         split_print_enable))
+    ((ConfigOptionEnum<SplitPrintAxis>,         split_axis))
+    ((ConfigOptionFloat,                        split_position))
+    ((ConfigOptionFloat,                        split_nogo_width))
+    ((ConfigOptionFloat,                        split_interface_length_min))
+    ((ConfigOptionFloat,                        split_interface_length_max))
+    ((ConfigOptionEnum<SplitInterfacePattern>,  split_interface_pattern))
+    ((ConfigOptionInt,                          split_interface_period))
+    ((ConfigOptionBool,                         split_interface_layer_shift))
 )
 
 // This object is mapped to Perl as Slic3r::Config::PrintRegion.

@@ -2159,6 +2159,15 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     painting_extruders.emplace_back(state_idx);
             }
         }
+        // SPLITPRINT: the two-head split reuses the painted-region machinery, with one region per head
+        // (extruders 1 and 2), so apply_split_print() can hand each head its part of every layer.
+        const bool split_print = num_extruders > 1 && print_object.config().split_print_enable.value;
+        if (split_print) {
+            for (unsigned int head_extruder : {1u, 2u})
+                if (std::find(painting_extruders.begin(), painting_extruders.end(), head_extruder) == painting_extruders.end())
+                    painting_extruders.push_back(head_extruder);
+            std::sort(painting_extruders.begin(), painting_extruders.end());
+        }
         if (model_object_status.print_object_regions_status == ModelObjectStatus::PrintObjectRegionsStatus::Valid) {
             // Verify that the trafo for regions & volume bounding boxes thus for regions is still applicable.
             auto invalidate = [it_print_object, it_print_object_end, update_apply_status]() {
@@ -2187,7 +2196,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 // have per-part enabled, so compare against the snapshot taken when these regions
                 // were generated and regenerate on any difference (slot toggled, per-part moved
                 // between slots, eligibility changed via components / gradient / is_mixed).
-                if (print_object_regions->last_slot_per_part_enabled != slot_per_part_enabled) {
+                if (print_object_regions->last_slot_per_part_enabled != slot_per_part_enabled
+                    || print_object_regions->last_split_print != split_print) { // SPLITPRINT
                     invalidate();
                     model_object_status.print_object_regions_status = ModelObjectStatus::PrintObjectRegionsStatus::PartiallyValid;
                     print_regions_reshuffled = true;
@@ -2216,6 +2226,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 print_variant_index,
                 print_object.is_fuzzy_skin_painted(),
                 slot_per_part_enabled);
+            print_object_regions->last_split_print = split_print; // SPLITPRINT
         }
         for (auto it = it_print_object; it != it_print_object_end; ++it)
             if ((*it)->m_shared_regions) {

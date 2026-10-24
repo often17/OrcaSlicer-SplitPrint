@@ -1296,6 +1296,14 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("scarf_angle_threshold", has_seam_slope && config->opt_bool("seam_slope_conditional"));
     toggle_line("scarf_overhang_threshold", has_seam_slope && config->opt_bool("seam_slope_conditional"));
 
+    // SPLITPRINT
+    const bool split_print = config->opt_bool("split_print_enable");
+    for (const char *key : {"split_axis", "split_position", "split_nogo_width", "split_interface_length_min",
+                            "split_interface_length_max", "split_interface_pattern", "split_interface_layer_shift"})
+        toggle_line(key, split_print);
+    toggle_line("split_interface_period", split_print &&
+                config->opt_enum<SplitInterfacePattern>("split_interface_pattern") == SplitInterfacePattern::Sine);
+
     bool use_beam_interlocking = config->opt_bool("interlocking_beam");
     toggle_line("mmu_segmented_region_interlocking_depth", !use_beam_interlocking);
     toggle_line("interlocking_beam_width", use_beam_interlocking);

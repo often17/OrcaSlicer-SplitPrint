@@ -1481,6 +1481,10 @@ static std::vector<std::string> s_Preset_print_options{
     // IDEX/IQEX parallel print mode (per-print selection)
     "imex_parallel_mode",
     "imex_head_filament_map",
+    // SPLITPRINT
+    "split_print_enable", "split_axis", "split_position", "split_nogo_width",
+    "split_interface_length_min", "split_interface_length_max", "split_interface_pattern",
+    "split_interface_period", "split_interface_layer_shift",
     // Z Anti-Aliasing (ZAA)
     "zaa_enabled",
     "zaa_minimize_perimeter_height",

@@ -3382,6 +3382,13 @@ void TabPrint::build()
         optgroup->append_single_option_line("flush_into_infill", "multimaterial_settings_flush_options#flush-into-objects-infill");
         optgroup->append_single_option_line("flush_into_objects", "multimaterial_settings_flush_options#flush-into-this-object");
         optgroup->append_single_option_line("flush_into_support", "multimaterial_settings_flush_options#flush-into-objects-support");
+        // SPLITPRINT
+        optgroup = page->new_optgroup(L("Two heads, one object"), L"advanced");
+        for (const char *key : {"split_print_enable", "split_axis", "split_position", "split_nogo_width",
+                                "split_interface_length_min", "split_interface_length_max", "split_interface_pattern",
+                                "split_interface_period", "split_interface_layer_shift"})
+            optgroup->append_single_option_line(key);
+
         optgroup = page->new_optgroup(L("Advanced"), L"advanced");
         optgroup->append_single_option_line("interlocking_beam", "multimaterial_settings_advanced#interlocking-beam");
         optgroup->append_single_option_line("toolchange_ordering", "multimaterial_settings_advanced#toolchange-ordering");

@@ -374,6 +374,8 @@ set(lisbslic3r_sources
     MTUtils.hpp
     MultiMaterialSegmentation.cpp
     MultiMaterialSegmentation.hpp
+    SplitPrint/Splitter.cpp
+    SplitPrint/Splitter.hpp
     MultiPoint.cpp
     MultiPoint.hpp
     MutablePolygon.cpp

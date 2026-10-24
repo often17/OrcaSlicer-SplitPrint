@@ -42,6 +42,7 @@
 #include "Surface.hpp"
 #include "Utils.hpp"
 #include "libslic3r/Feature/Interlocking/InterlockingGenerator.hpp"
+#include "libslic3r/SplitPrint/Splitter.hpp"
 #include "Config.hpp"
 #include "SurfaceCollection.hpp"
 
@@ -1058,11 +1059,66 @@ void PrintObject::slice()
     this->set_done(posSlice);
 }
 
+// SPLITPRINT: per-layer, per-extruder shapes for the two-head split, in the layout
+// multi_material_segmentation_by_painting() returns: extruder 1 gets T0's side, extruder 2 T1's.
 template<typename ThrowOnCancel>
-static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCancel throw_on_cancel)
+static std::vector<std::vector<ExPolygons>> split_print_segmentation(const PrintObject &print_object, ThrowOnCancel throw_on_cancel)
 {
-    // Returns MM segmentation based on painting in MM segmentation gizmo
-    std::vector<std::vector<ExPolygons>> segmentation = multi_material_segmentation_by_painting(print_object, throw_on_cancel);
+    const PrintObjectConfig &cfg           = print_object.config();
+    const size_t             num_extruders = print_object.print()->config().filament_diameter.size();
+    const size_t             num_layers    = print_object.layer_count();
+    std::vector<std::vector<ExPolygons>> out(num_layers, std::vector<ExPolygons>(num_extruders));
+    if (num_layers == 0 || num_extruders < 2)
+        return out;
+
+    std::vector<ExPolygons> slices(num_layers);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t layer_id = range.begin(); layer_id < range.end(); ++layer_id) {
+            throw_on_cancel();
+            for (const LayerRegion *layerm : print_object.get_layer(int(layer_id))->regions())
+                append(slices[layer_id], to_expolygons(layerm->slices.surfaces));
+            slices[layer_id] = union_ex(slices[layer_id]);
+        }
+    });
+    BoundingBox bbox;
+    for (const ExPolygons &s : slices)
+        if (!s.empty())
+            bbox.merge(get_extents(s));
+    if (!bbox.defined)
+        return out;
+
+    SplitPrint::SplitParams p;
+    p.axis       = cfg.split_axis.value == SplitPrintAxis::Y ? SplitPrint::SplitAxis::Y : SplitPrint::SplitAxis::X;
+    p.split_pos  = (p.axis == SplitPrint::SplitAxis::X ? bbox.center().x() : bbox.center().y()) + coord_t(scale_(cfg.split_position.value));
+    p.nogo_width = coord_t(scale_(cfg.split_nogo_width.value));
+    p.length_min = coord_t(scale_(cfg.split_interface_length_min.value));
+    p.length_max = coord_t(scale_(cfg.split_interface_length_max.value));
+    switch (cfg.split_interface_pattern.value) {
+    case SplitInterfacePattern::Random: p.pattern = SplitPrint::InterfacePattern::Random; break;
+    case SplitInterfacePattern::Sine: p.pattern = SplitPrint::InterfacePattern::Sine; break;
+    default: p.pattern = SplitPrint::InterfacePattern::Alternating; break;
+    }
+    p.period      = cfg.split_interface_period.value;
+    p.layer_shift = cfg.split_interface_layer_shift.value;
+    // One finger per perimeter line. The first layer may use a wider line, so take the second.
+    const Layer &ref_layer = *print_object.get_layer(int(std::min<size_t>(1, num_layers - 1)));
+    p.row_pitch            = ref_layer.regions().empty() ? 0 : ref_layer.regions().front()->flow(frPerimeter).scaled_spacing();
+
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t layer_id = range.begin(); layer_id < range.end(); ++layer_id) {
+            throw_on_cancel();
+            SplitPrint::SplitResult r = SplitPrint::split_layer(slices[layer_id], p, int(layer_id));
+            out[layer_id][0]          = std::move(r.tool[0]);
+            out[layer_id][1]          = std::move(r.tool[1]);
+        }
+    });
+    return out;
+}
+
+template<typename ThrowOnCancel>
+static inline void apply_mm_segmentation(PrintObject &print_object, std::vector<std::vector<ExPolygons>> segmentation, ThrowOnCancel throw_on_cancel)
+{
+    // segmentation: per layer, per extruder, the area that extruder prints (from painting or SPLITPRINT).
     assert(segmentation.size() == print_object.layer_count());
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, segmentation.size(), std::max(segmentation.size() / 128, size_t(1))),
@@ -1395,6 +1451,15 @@ void PrintObject::slice_volumes()
 
     this->apply_conical_overhang();
 
+    // SPLITPRINT: two heads print this object at once. Replaces color painting for the object.
+    if (m_config.split_print_enable.value && m_print->config().filament_diameter.size() > 1) {
+        if (this->model_object()->is_mm_painted())
+            this->active_step_add_warning(PrintStateBase::WarningLevel::CRITICAL,
+                                          L("Color painting is ignored because this object is printed with two heads at once."));
+        BOOST_LOG_TRIVIAL(debug) << "Slicing volumes - two-head split";
+        auto throw_on_cancel = [print]() { print->throw_if_canceled(); };
+        apply_mm_segmentation(*this, split_print_segmentation(*this, throw_on_cancel), throw_on_cancel);
+    } else
     // Is any ModelVolume multi-material painted?
     if (const auto& volumes = this->model_object()->volumes;
         m_print->config().filament_diameter.size() > 1 && // BBS
@@ -1411,7 +1476,8 @@ void PrintObject::slice_volumes()
         }
 
         BOOST_LOG_TRIVIAL(debug) << "Slicing volumes - MMU segmentation";
-        apply_mm_segmentation(*this, [print]() { print->throw_if_canceled(); });
+        auto throw_on_cancel = [print]() { print->throw_if_canceled(); };
+        apply_mm_segmentation(*this, multi_material_segmentation_by_painting(*this, throw_on_cancel), throw_on_cancel);
     }
 
     // Is any ModelVolume fuzzy skin painted?

@@ -348,6 +348,20 @@ static t_config_enum_values s_keys_map_IroningType {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(IroningType)
 
+// SPLITPRINT
+static t_config_enum_values s_keys_map_SplitPrintAxis {
+    { "x", int(SplitPrintAxis::X) },
+    { "y", int(SplitPrintAxis::Y) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SplitPrintAxis)
+
+static t_config_enum_values s_keys_map_SplitInterfacePattern {
+    { "alternating", int(SplitInterfacePattern::Alternating) },
+    { "random",      int(SplitInterfacePattern::Random) },
+    { "sine",        int(SplitInterfacePattern::Sine) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SplitInterfacePattern)
+
 //BBS
 static t_config_enum_values s_keys_map_WallInfillOrder {
     { "inner wall/outer wall/infill",     int(WallInfillOrder::InnerOuterInfill) },
@@ -7118,6 +7132,98 @@ void PrintConfigDef::init_fff_params()
                      "printer's physical extruder map routes to it.");
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionString(""));
+
+    // SPLITPRINT: one object printed by two heads at the same time.
+    def = this->add("split_print_enable", coBool);
+    def->label = L("Print with two heads at once");
+    def->category = L("Others");
+    def->tooltip = L("Split the object between two independent toolheads that print it at the same time. "
+                     "Tool 1 prints the side below the split line, tool 2 the side above it. "
+                     "The two sides interlock with fingers inside the no-go zone.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("split_axis", coEnum);
+    def->label = L("Split axis");
+    def->category = L("Others");
+    def->tooltip = L("The axis along which the two gantries can never pass each other. "
+                     "The split line runs across this axis.");
+    def->enum_keys_map = &ConfigOptionEnum<SplitPrintAxis>::get_enum_values();
+    def->enum_values.push_back("x");
+    def->enum_values.push_back("y");
+    def->enum_labels.push_back("X");
+    def->enum_labels.push_back("Y");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SplitPrintAxis>(SplitPrintAxis::X));
+
+    def = this->add("split_position", coFloat);
+    def->label = L("Split position");
+    def->category = L("Others");
+    def->tooltip = L("Offset of the split line from the centre of the object, along the split axis.");
+    def->sidetext = L("mm");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("split_nogo_width", coFloat);
+    def->label = L("No-go zone width");
+    def->category = L("Others");
+    def->tooltip = L("Width of the zone around the split line that only one head may enter at a time. "
+                     "The interlocking fingers are built inside it.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(10.));
+
+    def = this->add("split_interface_length_min", coFloat);
+    def->label = L("Minimum finger length");
+    def->category = L("Others");
+    def->tooltip = L("Shortest distance a finger reaches past the split line into the other head's side.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(1.));
+
+    def = this->add("split_interface_length_max", coFloat);
+    def->label = L("Maximum finger length");
+    def->category = L("Others");
+    def->tooltip = L("Longest distance a finger reaches past the split line into the other head's side. "
+                     "Limited to half the no-go zone width.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(4.));
+
+    def = this->add("split_interface_pattern", coEnum);
+    def->label = L("Finger length pattern");
+    def->category = L("Others");
+    def->tooltip = L("How finger lengths vary between the minimum and maximum.\n"
+                     "Alternating: each head's fingers switch between short and long.\n"
+                     "Random: a repeatable random length for every finger.\n"
+                     "Sine: lengths follow a smooth wave.");
+    def->enum_keys_map = &ConfigOptionEnum<SplitInterfacePattern>::get_enum_values();
+    def->enum_values.push_back("alternating");
+    def->enum_values.push_back("random");
+    def->enum_values.push_back("sine");
+    def->enum_labels.push_back(L("Alternating"));
+    def->enum_labels.push_back(L("Random"));
+    def->enum_labels.push_back(L("Sine"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SplitInterfacePattern>(SplitInterfacePattern::Alternating));
+
+    def = this->add("split_interface_period", coInt);
+    def->label = L("Wave period");
+    def->category = L("Others");
+    def->tooltip = L("Number of finger rows in one wave of the Sine pattern.");
+    def->min = 2;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(6));
+
+    def = this->add("split_interface_layer_shift", coBool);
+    def->label = L("Alternate fingers every layer");
+    def->category = L("Others");
+    def->tooltip = L("Swap which head owns each finger row on every layer, so the joint also interlocks vertically.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
 
     def = this->add("imex_mode_names", coStrings);
     def->label = L("IDEX/IQEX Mode Names");
