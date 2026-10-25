@@ -8,8 +8,11 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/format.hpp"
 
 namespace Slic3r::SplitPrint {
@@ -77,9 +80,12 @@ Line parse_line(const std::string &raw)
             ++k;
             continue;
         }
-        char        *end = nullptr;
-        const double v   = std::strtod(code.c_str() + k + 1, &end);
-        const size_t len = size_t(end - (code.c_str() + k + 1));
+        // G-code numbers always use a decimal point, whatever the user's locale says.
+        const size_t sign = k + 1 < code.size() && code[k + 1] == '+' ? 1 : 0;
+        size_t       len  = 0;
+        const double v    = string_to_double_decimal_point(std::string_view(code).substr(k + 1 + sign), &len);
+        if (len > 0)
+            len += sign;
         if (len > 0) {
             const int idx = letter == 'X' ? 0 : letter == 'Y' ? 1 : letter == 'Z' ? 2 : letter == 'E' ? 3 : -1;
             if (idx >= 0) {
@@ -164,9 +170,7 @@ int axis_index(char axis) { return std::toupper((unsigned char) axis) == 'Y' ? 1
 
 std::string fmt3(double v)
 {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.3f", v);
-    return buf;
+    return float_to_string_decimal_point(v, 3);
 }
 
 // ---- Per-stream analysis -----------------------------------------------------------------

@@ -127,5 +127,10 @@ supports that cross the split (each support goes to the side it stands on).
       (300 mm test part: about 42% less time than one head). Preview plays both heads.
 - [x] Python checker (neutral format)
 - [x] Fork: `origin` = https://github.com/often17/OrcaSlicer-SplitPrint, `upstream` = SoftFever
-- [ ] Klipper coordinator `run_dual.py` + example configs
+- [x] Brim and skirt cut at the split line, each head prints its side.
+- [x] Klipper coordinator `run_dual.py` + example configs (tested against fake
+      Moonraker servers: `python -I tools/splitprint/test_run_dual.py`; the configs'
+      pins come from Klipper's Octopus Pro v1.1 and EBB v1.2 samples, not yet run on
+      the boards). Run: `run_dual.py part.T0.gcode part.T1.gcode --t0 URL --t1 URL`,
+      or `--dry-run` to check only.
 - [ ] Real-printer dry run (no filament, heads far apart first)

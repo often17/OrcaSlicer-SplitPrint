@@ -5919,6 +5919,14 @@ std::string GCode::generate_skirt(const Print &print,
         Skirt::make_skirt_loops_per_extruder_1st_layer(print, skirt, layer_tools, skirt_done) :
         Skirt::make_skirt_loops_per_extruder_other_layers(print, skirt, layer_tools, skirt_done);
 
+    // SPLITPRINT: in a head's stream that head prints every loop of the layer, cut to its side below.
+    const bool split_skirt = !skirt_loops_per_extruder.empty() && this->split_params_of(*layer.object()) != nullptr;
+    if (split_skirt) {
+        std::pair<size_t, size_t> all = skirt_loops_per_extruder.begin()->second;
+        for (const auto &[id, range] : skirt_loops_per_extruder)
+            all = {std::min(all.first, range.first), std::max(all.second, range.second)};
+        skirt_loops_per_extruder = {{extruder_id, all}};
+    }
     if (auto loops_it = skirt_loops_per_extruder.find(extruder_id); loops_it != skirt_loops_per_extruder.end()) {
         const std::pair<size_t, size_t> loops = loops_it->second;
        
@@ -5935,6 +5943,30 @@ std::string GCode::generate_skirt(const Print &print,
         const size_t start_idx = (first_layer || !print.m_config.single_loop_draft_shield)
                                  ? loops.first
                                  : (loops.second - 1);
+
+        // SPLITPRINT: each head prints every skirt loop cut at the split line, on its own side.
+        // A whole loop would take one head around the other.
+        if (split_skirt) {
+            std::vector<ExtrusionEntity *> skirt_loops;
+            std::vector<std::unique_ptr<ExtrusionEntity>> skirt_copies;
+            for (size_t i = start_idx; i < loops.second; ++i) {
+                auto loop = std::make_unique<ExtrusionLoop>(*dynamic_cast<const ExtrusionLoop*>(skirt.entities[i]));
+                for (ExtrusionPath &path : loop->paths) {
+                    path.height     = layer_skirt_flow.height();
+                    path.mm3_per_mm = mm3_per_mm;
+                }
+                skirt_loops.push_back(loop.get());
+                skirt_copies.push_back(std::move(loop));
+            }
+            // The skirt is in plate coordinates; the split line of the object's first instance divides it.
+            std::vector<std::unique_ptr<ExtrusionEntity>> split_owned;
+            for (const ExtrusionEntity *ee : this->split_head_side(*layer.object(), 0, skirt_loops, split_owned))
+                gcode += this->extrude_entity(*ee, "skirt", NOZZLE_CONFIG(support_speed));
+            m_avoid_crossing_perimeters.use_external_mp(false);
+            if (first_layer && loops.first == 0)
+                m_avoid_crossing_perimeters.disable_once();
+            return gcode;
+        }
 
         // Loop over the skirt loops and extrude
         for (size_t i = start_idx; i < loops.second; ++i) {
@@ -5965,6 +5997,30 @@ std::string GCode::generate_skirt(const Print &print,
             m_avoid_crossing_perimeters.disable_once();
     }
     return gcode;
+}
+
+// SPLITPRINT
+const SplitPrint::SplitParams *GCode::split_params_of(const PrintObject &object)
+{
+    if (m_split_head < 0 || !object.config().split_print_enable.value)
+        return nullptr;
+    auto it = m_split_params.find(&object);
+    if (it == m_split_params.end())
+        it = m_split_params.emplace(&object, SplitPrint::object_split_params(object)).first;
+    return &it->second;
+}
+
+// SPLITPRINT
+std::vector<const ExtrusionEntity *> GCode::split_head_side(const PrintObject &object, size_t instance_id,
+                                                            const std::vector<ExtrusionEntity *> &entities,
+                                                            std::vector<std::unique_ptr<ExtrusionEntity>> &owned)
+{
+    std::vector<const ExtrusionEntity *> all(entities.begin(), entities.end());
+    const SplitPrint::SplitParams *params = this->split_params_of(object);
+    if (params == nullptr || instance_id >= object.instances().size())
+        return all;
+    const coord_t cut = SplitPrint::plate_split_pos(*params, object.instances()[instance_id].shift);
+    return SplitPrint::clip_entities(all, params->axis, cut, m_split_head == 1, owned);
 }
 
 static size_t find_skirt_brim_group_idx(const Print& print, ObjectID object_id, size_t instance_id)
@@ -6049,7 +6105,7 @@ std::string GCode::generate_object_brim(
 
     const bool wait_for_owner_filament = has_bed_exclude_volumes(m_config) &&
         active_bed_exclude_volume_mode(m_config) != BedExcludeVolumeMode::Shared;
-    auto emit_brim = [this, extruder_id, wait_for_owner_filament](const ExtrusionEntityCollection& brim,
+    auto emit_brim = [this, extruder_id, wait_for_owner_filament, &object, instance_id](const ExtrusionEntityCollection& brim,
                                          const std::vector<ObjectInstanceID>& instances,
                                          const unsigned int brim_filament_id) {
         std::string gcode;
@@ -6066,7 +6122,9 @@ std::string GCode::generate_object_brim(
 
         this->set_origin(0., 0.);
         m_avoid_crossing_perimeters.use_external_mp();
-        for (const ExtrusionEntity* ee : brim.entities)
+        // SPLITPRINT: in a head's stream, only the brim on that head's side.
+        std::vector<std::unique_ptr<ExtrusionEntity>> split_owned;
+        for (const ExtrusionEntity* ee : this->split_head_side(object, instance_id, brim.entities, split_owned))
             if (ee != nullptr)
                 gcode += this->extrude_entity(*ee, "brim", NOZZLE_CONFIG(support_speed));
         m_avoid_crossing_perimeters.use_external_mp(false);
@@ -7736,9 +7794,8 @@ LayerResult GCode::process_layer(
                 }
                 // SPLITPRINT: a head's own stream prints the layer in two phases, its part near the
                 // middle and its far part, so the other head can work far away meanwhile (SplitPrint/Phases.hpp).
-                const bool split_phases = m_split_head >= 0 && instance_to_print.print_object.config().split_print_enable.value;
-                if (split_phases && m_split_params.count(&instance_to_print.print_object) == 0)
-                    m_split_params[&instance_to_print.print_object] = SplitPrint::object_split_params(instance_to_print.print_object);
+                const SplitPrint::SplitParams *split_params = this->split_params_of(instance_to_print.print_object);
+                const bool split_phases = split_params != nullptr;
                 for (int split_phase = 0; split_phase < (split_phases ? 2 : 1); ++split_phase)
                 for (size_t island_idx : island_order) {
                     ObjectByExtruder::Island &island = islands[island_idx];
@@ -7746,7 +7803,7 @@ LayerResult GCode::process_layer(
                     std::vector<ObjectByExtruder::Island::Region>  by_region_phase;
                     std::vector<std::unique_ptr<ExtrusionEntity>> phase_owned;
                     if (split_phases) {
-                        const SplitPrint::SplitParams &sp  = m_split_params[&instance_to_print.print_object];
+                        const SplitPrint::SplitParams &sp  = *split_params;
                         const coord_t                  cut = SplitPrint::phase_cut(sp, m_config.split_gantry_min_gap.value, m_split_head);
                         // The order flips every layer, so each head starts a layer where it ended the last one.
                         const bool split_keep_high = (split_phase == 0) == (m_layer_index % 2 == 0);

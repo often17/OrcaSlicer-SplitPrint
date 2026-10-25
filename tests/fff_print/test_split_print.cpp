@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -333,4 +335,91 @@ TEST_CASE("Fingers two lines wide do not need a retraction each", "[SplitPrint]"
     // About 110 fingers per head on each of the 5 layers with one-line fingers.
     CHECK(one_line > 1000);
     CHECK(two_lines * 4 < one_line);
+}
+
+namespace {
+
+// Length printed per feature (as named by the role tag) in a G-code file, and the X range of each feature.
+struct FeatureRun
+{
+    double length = 0.;
+    double x_min  = 1e9;
+    double x_max  = -1e9;
+};
+std::map<std::string, FeatureRun> feature_runs(const std::string &path)
+{
+    std::map<std::string, FeatureRun> runs;
+    std::ifstream                     in(path, std::ios::binary);
+    std::string                       feature;
+    double                            x = 0., y = 0.;
+    auto value = [](const std::string &line, char axis, double &v) {
+        const size_t k = line.find(std::string(" ") + axis);
+        if (k == std::string::npos)
+            return false;
+        v = std::stod(line.substr(k + 2));
+        return true;
+    };
+    for (std::string line; std::getline(in, line);) {
+        // The role tag is ";TYPE:" or "; FEATURE: ", depending on the printer.
+        const size_t type = line.rfind(";TYPE:", 0) == 0 ? 6 : line.rfind("; FEATURE: ", 0) == 0 ? 11 : 0;
+        if (type > 0) {
+            feature = line.substr(type);
+            while (!feature.empty() && std::isspace((unsigned char) feature.back()))
+                feature.pop_back();
+            continue;
+        }
+        if (line.rfind("G1 ", 0) != 0 && line.rfind("G0 ", 0) != 0)
+            continue;
+        const std::string code = line.substr(0, line.find(';'));
+        double nx = x, ny = y, e = 0.;
+        value(code, 'X', nx);
+        value(code, 'Y', ny);
+        if (value(code, 'E', e) && e > 0. && (nx != x || ny != y)) {
+            FeatureRun &r = runs[feature];
+            r.length += std::hypot(nx - x, ny - y);
+            r.x_min = std::min({r.x_min, x, nx});
+            r.x_max = std::max({r.x_max, x, nx});
+        }
+        x = nx;
+        y = ny;
+    }
+    return runs;
+}
+
+} // namespace
+
+TEST_CASE("Each head prints the brim and skirt on its own side", "[SplitPrint]")
+{
+    // A 40 mm cube centred at X = 200, split at its centre, with a 5 mm brim and one skirt loop.
+    DynamicPrintConfig config = split_config(true);
+    config.set_deserialize_strict({{"brim_type", "outer_only"}, {"brim_width", "5"}, {"skirt_loops", "1"}, {"skirt_distance", "3"}});
+    Print print;
+    Model model;
+    init_print({cube(40)}, print, model, config);
+    model.center_instances_around_point(Vec2d(200., 200.));
+    DynamicPrintConfig full = DynamicPrintConfig::full_print_config();
+    full.apply(config);
+    print.apply(model, full);
+    print.process();
+    ScopedTemporaryFile  temp(".gcode");
+    GCodeProcessorResult result;
+    print.export_gcode(temp.string(), &result, nullptr);
+
+    const std::map<std::string, FeatureRun> combined = feature_runs(temp.string());
+    std::array<std::map<std::string, FeatureRun>, 2> heads;
+    for (int h = 0; h < 2; ++h) {
+        const std::string path = SplitPrint::head_gcode_path(temp.string(), h);
+        heads[h] = feature_runs(path);
+        boost::filesystem::remove(path);
+    }
+    for (const char *feature : {"Brim", "Skirt"}) {
+        INFO(feature);
+        REQUIRE(combined.count(feature) == 1);
+        REQUIRE(heads[0].count(feature) == 1);
+        REQUIRE(heads[1].count(feature) == 1);
+        // Shared, not printed twice: together the heads print what one head prints alone.
+        CHECK_THAT(heads[0].at(feature).length + heads[1].at(feature).length, WithinRel(combined.at(feature).length, 0.03));
+        CHECK(heads[0].at(feature).x_max <= 200.01);
+        CHECK(heads[1].at(feature).x_min >= 199.99);
+    }
 }

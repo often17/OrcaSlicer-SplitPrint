@@ -10,7 +10,9 @@ simulate time. It takes the whole stretch of the split axis each head can occupy
 in that interval and requires:
 
   1. Gantry order and gap: max(T0) + gap <= min(T1).
-  2. No-go zone: at most one head enters [band_lo, band_hi].
+  2. No-go zone: at most one head enters [band_lo, band_hi]. Without --band this
+     is not checked on its own; it follows from rule 1 when the zone is no wider
+     than the gap.
   3. Shared Z: Z changes only after a sync and before any extrusion in that
      interval, and both heads reach the same Z in the same interval.
 
@@ -18,7 +20,7 @@ Moves before the first sync (start G-code, homing) are not checked, and neither
 are moves after the ``end`` sync (each head's own end G-code, which may home).
 Both are reported as warnings.
 
-Usage: check.py T0.gcode T1.gcode --axis x --gap 60 --band 45 55
+Usage: check.py T0.gcode T1.gcode --axis x --gap 60 [--band 45 55]
 Exit code 0 = safe, 1 = violation, 2 = bad input.
 """
 
@@ -82,7 +84,7 @@ def parse(path, axis, band):
                 cur = Interval(m.group(1))
                 s.intervals.append(cur)
                 cur.touch(pos[a], n)  # the head sits here while waiting
-                if band[0] < pos[a] < band[1]:
+                if band and band[0] < pos[a] < band[1]:
                     cur.in_band_line = n
                 continue
             code = raw.split(";", 1)[0].strip()
@@ -128,7 +130,7 @@ def parse(path, axis, band):
                     pts += [c - r, c + r]
                 for u in pts:
                     cur.touch(u, n)
-                if not cur.in_band_line and max(pts) > band[0] and min(pts) < band[1]:
+                if band and not cur.in_band_line and max(pts) > band[0] and min(pts) < band[1]:
                     cur.in_band_line = n
                 if pos["Z"] != start["Z"]:
                     if cur.extruded and not cur.bad_z_line:
@@ -176,9 +178,9 @@ def main(argv=None):
     ap.add_argument("t1")
     ap.add_argument("--axis", choices=("x", "y"), default="x", help="split axis (the axis the gantries can't cross on)")
     ap.add_argument("--gap", type=float, required=True, help="minimum nozzle distance along the split axis, mm")
-    ap.add_argument("--band", type=float, nargs=2, required=True, metavar=("LO", "HI"), help="no-go zone, mm")
+    ap.add_argument("--band", type=float, nargs=2, metavar=("LO", "HI"), help="no-go zone, mm (optional, see rule 2)")
     args = ap.parse_args(argv)
-    band = tuple(sorted(args.band))
+    band = tuple(sorted(args.band)) if args.band else None
     try:
         t0 = parse(args.t0, args.axis, band)
         t1 = parse(args.t1, args.axis, band)

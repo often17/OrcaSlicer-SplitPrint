@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <clocale>
 #include <limits>
 #include <memory>
 #include <cstdint>
@@ -370,4 +371,39 @@ TEST_CASE("Phase cuts leave the gap between what the two heads print at once", "
     CHECK(unscale<double>(phase_cut(p, gap, 1) - p.band_hi()) >= gap);
     // Phase 1: T1 keeps x < cut1 but reaches down to the band's near edge; T0 keeps x < cut0.
     CHECK(unscale<double>(p.band_lo() - phase_cut(p, gap, 0)) >= gap);
+}
+
+TEST_CASE("Scheduling reads and writes G-code numbers with a point in any locale", "[SplitPrint]")
+{
+    // Orca writes short numbers like Z.2; the GUI runs with the user's number format, which may use a comma.
+    std::array<HeadStream, 2> in;
+    for (int h = 0; h < 2; ++h) {
+        const std::string x = h == 0 ? "50.5" : "650.5";
+        for (const std::string &line : std::vector<std::string>{"G90", "M83", "; SPLITPRINT_SYNC L0", "G1 Z.2", "G1 X" + x + " Y10 F12000", "G1 Y30.25 E1.5 F1800"}) {
+            in[h].lines.push_back(line);
+            in[h].line_time.push_back(1.);
+        }
+    }
+    const std::string old_locale = std::setlocale(LC_NUMERIC, nullptr);
+    const char       *comma      = nullptr;
+    for (const char *name : {"de-DE", "pt-PT", "de_DE.UTF-8", "pt_PT.UTF-8", "fr_FR.UTF-8"})
+        if ((comma = std::setlocale(LC_NUMERIC, name)) != nullptr)
+            break;
+    if (comma == nullptr)
+        SKIP("no locale with a decimal comma is installed");
+    struct Restore
+    {
+        std::string name;
+        ~Restore() { std::setlocale(LC_NUMERIC, name.c_str()); }
+    } restore{old_locale};
+
+    const ScheduleResult r = schedule_streams(in, lane_params());
+    for (int h = 0; h < 2; ++h) {
+        // The layer's Z move was read, so the shared Z move is in its own interval.
+        CHECK(std::count(r.lines[h].begin(), r.lines[h].end(), "; SPLITPRINT_SYNC L0z") == 1);
+        for (const std::string &line : r.lines[h])
+            CHECK(line.find(',') == std::string::npos);
+    }
+    CHECK(std::find(r.lines[0].begin(), r.lines[0].end(), "G1 X0.000 F12000 ; SPLITPRINT park before the first layer") != r.lines[0].end());
+    CHECK(check_streams(r.lines, lane_params()).empty());
 }

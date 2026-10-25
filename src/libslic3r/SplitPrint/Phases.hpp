@@ -5,6 +5,7 @@
 
 #include "Splitter.hpp"
 #include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/Point.hpp"
 #include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
@@ -32,6 +33,10 @@ SplitParams object_split_params(const PrintObject &object);
 
 // Where a head's near and far parts meet along the split axis.
 coord_t phase_cut(const SplitParams &params, double gap_mm, int head);
+
+// Where the split line of an instance moved by `shift` lies on the plate. Brims and skirts are
+// in plate coordinates; each head prints the part on its own side (T0 below it, T1 above it).
+coord_t plate_split_pos(const SplitParams &params, const Point &shift);
 
 // Keeps the part of `entity` on one side of the line u = cut (u >= cut when keep_high).
 // A loop or path that crosses the line is cut into open paths. Returns nullptr when nothing

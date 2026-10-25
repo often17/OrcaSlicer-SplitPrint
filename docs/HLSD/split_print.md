@@ -52,6 +52,8 @@ both head files first and the combined file last; the GUI export copies all thre
   each head's own end G-code, which nothing checks.
 - Before the first layer each head parks at its own end of the bed along the split
   axis, so both positions are known when checking starts.
+- Brim and skirt are cut at the split line, and each head prints the part on its own
+  side. A whole skirt loop would take one head around the other.
 
 ## Printing at the same time (`SplitPrint/Phases`)
 Orca prints a layer as whole walls then whole infill, each spanning the head's side
@@ -79,6 +81,26 @@ scheduler adds as few as it can.
 Z changing only after a sync and before any extrusion, both heads agreeing on Z, and
 no homing after the first sync. `tools/splitprint/check.py` is an independent copy of
 the same check, which the Klipper coordinator runs before it starts a print.
+
+## Klipper coordinator (`tools/splitprint/run_dual.py`)
+Each gantry runs its own Klipper and Moonraker instance, and Klipper cannot wait for
+another printer, so a host script keeps the heads in step. It:
+- refuses to start unless both files carry the same syncs and pass `check.py`, and
+  both instances report Klippy `ready`;
+- runs T1's start G-code before T0's, so T1 homes towards its end of the bed first;
+- sends each sync interval to both heads at once with Moonraker
+  `POST /printer/gcode/script`, ending each with `M400`. That call returns once the
+  commands have run, so when both calls are back both heads are at the barrier, and
+  only then does the next interval go out;
+- calls `/printer/emergency_stop` on both instances when either fails or on Ctrl+C.
+
+Each barrier drains both motion queues, which is why the scheduler adds as few syncs
+as it can. `tools/splitprint/klipper/` holds example configs for two BTT Octopus Pro
+boards with EBB CAN toolheads. The second board has no Z motor: Klipper's corexy
+kinematics still needs a `stepper_z`, so it gets an unconnected one whose position
+`PRINT_START` sets with `SET_KINEMATIC_POSITION`. Klipper's soft limits only know
+their own head, so the limits are set as tight as the gap allows but the slicer,
+`check.py` and the coordinator are what keep the gantries apart.
 
 ## Preview and time
 The combined file has both heads with tool changes, one after the other, so it is

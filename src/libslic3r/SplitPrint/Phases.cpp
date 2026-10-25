@@ -253,6 +253,11 @@ coord_t phase_cut(const SplitParams &params, double gap_mm, int head)
     return head == 0 ? params.split_pos - away : params.split_pos + away;
 }
 
+coord_t plate_split_pos(const SplitParams &params, const Point &shift)
+{
+    return params.split_pos + (params.axis == SplitAxis::Y ? shift.y() : shift.x());
+}
+
 std::unique_ptr<ExtrusionEntity> clip_entity(const ExtrusionEntity &entity, SplitAxis axis, coord_t cut, bool keep_high)
 {
     return clip(entity, Side{axis == SplitAxis::Y ? 1 : 0, cut, keep_high});

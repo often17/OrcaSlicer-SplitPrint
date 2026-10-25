@@ -11,6 +11,7 @@
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/format.hpp"
@@ -162,8 +163,10 @@ bool print_is_split(const Print &print)
 void finish_head_streams(const Print &print, const std::string &path, const std::array<GCodeProcessorResult *, 2> &head_results,
                          GCodeProcessorResult *preview)
 {
-    const PrintConfig &cfg = print.config();
-    ScheduleParams     params;
+    // The GUI runs with the user's number format; G-code needs a decimal point.
+    CNumericLocalesSetter locales_setter;
+    const PrintConfig    &cfg = print.config();
+    ScheduleParams        params;
     params.axis = 'X';
     for (const PrintObject *object : print.objects())
         if (object->config().split_print_enable.value) {

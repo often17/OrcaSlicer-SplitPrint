@@ -894,6 +894,12 @@ protected:
     int m_split_head = -1;
     // SPLITPRINT: split line of each object, for printing a layer in near / far phases.
     std::map<const PrintObject*, SplitPrint::SplitParams> m_split_params;
+    // SPLITPRINT: the object's split in a head's stream, nullptr in the combined stream or when the object is not split.
+    const SplitPrint::SplitParams *split_params_of(const PrintObject &object);
+    // SPLITPRINT: in a head's stream, the part of plate-frame entities (brim, skirt) on that head's side.
+    std::vector<const ExtrusionEntity *> split_head_side(const PrintObject &object, size_t instance_id,
+                                                         const std::vector<ExtrusionEntity *> &entities,
+                                                         std::vector<std::unique_ptr<ExtrusionEntity>> &owned);
     // IMEX: parsed per-plate head→filament overrides (physical T-index → 1-based filament slot).
     // Cached from imex_head_filament_map at print start. Empty map means "fall back to pem".
     std::map<int,int> m_imex_head_filament_map;
