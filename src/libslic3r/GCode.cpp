@@ -18,6 +18,7 @@
 #include "GCode/WipePathHelpers.hpp"
 #include "GCodeReader.hpp"
 #include "GCodeWriter.hpp"
+#include "SplitPrint/Phases.hpp" // SPLITPRINT
 #include "Point.hpp"
 #include "Line.hpp"
 #include "ObjectID.hpp"
@@ -3652,6 +3653,12 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         // In non-sequential print, the printing extruders may have been modified by the extruder switches stored in Model::custom_gcode_per_print_z.
         // Therefore initialize the printing extruders from there.
         this->set_extruders(tool_ordering.all_extruders());
+        // SPLITPRINT: a head's stream drives one nozzle, addressed without a tool number.
+        if (m_split_head >= 0) {
+            this->set_extruders({unsigned(m_split_head)});
+            m_writer.multiple_extruders = false;
+            initial_extruder_id          = unsigned(m_split_head);
+        }
         print_object_instances_ordering =
             // By default, order object instances using nearest-neighbor chaining plus
             // 2-opt and crossing-removal post-processing.
@@ -3769,6 +3776,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
 
     //Set variable for total layer count so it can be used in custom gcode.
     this->placeholder_parser().set("total_layer_count", m_layer_count);
+    // SPLITPRINT: which head's stream is being written (-1 = the combined preview stream).
+    this->placeholder_parser().set("split_head", m_split_head);
     // Useful for sequential prints.
     this->placeholder_parser().set("current_object_idx", 0);
     // For the start / end G-code to do the priming and final filament pull in case there is no wipe tower provided.
@@ -4799,6 +4808,9 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         file.write(gcode);
     }
 
+    // SPLITPRINT: both heads finish the last layer before either runs its end G-code.
+    if (m_split_head >= 0)
+        file.write("; SPLITPRINT_SYNC end\n");
     file.write(m_writer.set_fan(0));
     //BBS: make sure the additional fan is closed when end
     if(m_config.auxiliary_fan.value)
@@ -5571,6 +5583,8 @@ void GCode::_print_first_layer_extruder_temperatures(GCodeOutputStream &file, Pr
         } else {
             // Set temperatures of all the printing extruders.
             for (unsigned int tool_id : print.extruders()) {
+                if (m_split_head >= 0 && tool_id != unsigned(m_split_head))
+                    continue; // SPLITPRINT: each board heats only its own nozzle
                 int temp = print.config().nozzle_temperature_initial_layer.get_at(get_filament_config_index((int)tool_id));
                 if (m_ooze_prevention.enable && tool_id != first_printing_extruder_id) {
                     if (print.config().idle_temperature.get_at(tool_id) == 0)
@@ -6646,6 +6660,9 @@ LayerResult GCode::process_layer(
     std::string gcode;
     assert(is_decimal_separator_point()); // for the sprintfs
 
+    // SPLITPRINT: both heads meet here before either changes Z.
+    if (m_split_head >= 0)
+        gcode += "; SPLITPRINT_SYNC L" + std::to_string(m_layer_index + 1) + "\n";
     // add tag for processor
     gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Layer_Change) + "\n";
     // export layer z
@@ -7434,6 +7451,9 @@ LayerResult GCode::process_layer(
 
     for (unsigned int extruder_id : layer_tools.extruders)
     {
+        // SPLITPRINT: each head's stream holds only that head's work.
+        if (m_split_head >= 0 && extruder_id != unsigned(m_split_head))
+            continue;
         if (print.config().skirt_type == stCombined && !print.skirt_brim_groups().empty()) {
             for (size_t group_idx = 0; group_idx < print.skirt_brim_groups().size(); ++group_idx) {
                 const Print::SkirtBrimGroup& group = print.skirt_brim_groups()[group_idx];
@@ -7714,9 +7734,29 @@ LayerResult GCode::process_layer(
                             island_order.emplace_back(i);
                     }
                 }
+                // SPLITPRINT: a head's own stream prints the layer in two phases, its part near the
+                // middle and its far part, so the other head can work far away meanwhile (SplitPrint/Phases.hpp).
+                const bool split_phases = m_split_head >= 0 && instance_to_print.print_object.config().split_print_enable.value;
+                if (split_phases && m_split_params.count(&instance_to_print.print_object) == 0)
+                    m_split_params[&instance_to_print.print_object] = SplitPrint::object_split_params(instance_to_print.print_object);
+                for (int split_phase = 0; split_phase < (split_phases ? 2 : 1); ++split_phase)
                 for (size_t island_idx : island_order) {
                     ObjectByExtruder::Island &island = islands[island_idx];
-                    const auto& by_region_specific = is_anything_overridden ? island.by_region_per_copy(by_region_per_copy_cache, static_cast<unsigned int>(instance_to_print.instance_id), extruder_id, print_wipe_extrusions != 0) : island.by_region;
+                    const auto& by_region_all = is_anything_overridden ? island.by_region_per_copy(by_region_per_copy_cache, static_cast<unsigned int>(instance_to_print.instance_id), extruder_id, print_wipe_extrusions != 0) : island.by_region;
+                    std::vector<ObjectByExtruder::Island::Region>  by_region_phase;
+                    std::vector<std::unique_ptr<ExtrusionEntity>> phase_owned;
+                    if (split_phases) {
+                        const SplitPrint::SplitParams &sp  = m_split_params[&instance_to_print.print_object];
+                        const coord_t                  cut = SplitPrint::phase_cut(sp, m_config.split_gantry_min_gap.value, m_split_head);
+                        // The order flips every layer, so each head starts a layer where it ended the last one.
+                        const bool split_keep_high = (split_phase == 0) == (m_layer_index % 2 == 0);
+                        by_region_phase.resize(by_region_all.size());
+                        for (size_t r = 0; r < by_region_all.size(); ++r) {
+                            by_region_phase[r].perimeters = SplitPrint::clip_entities(by_region_all[r].perimeters, sp.axis, cut, split_keep_high, phase_owned);
+                            by_region_phase[r].infills    = SplitPrint::clip_entities(by_region_all[r].infills, sp.axis, cut, split_keep_high, phase_owned);
+                        }
+                    }
+                    const auto& by_region_specific = split_phases ? by_region_phase : by_region_all;
                     // When starting a new object, use the external motion planner for the first travel move.
                     const Point& offset = instance_to_print.print_object.instances()[instance_to_print.instance_id].shift;
                     std::pair<const PrintObject*, Point> this_object_copy(&instance_to_print.print_object, offset);
@@ -10888,7 +10928,8 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
         // multi-color in configurations where mid-print T<n> wouldn't make sense
         // (see imex_multicolor_block_reason).
         const std::string toolchange_command = m_writer.toolchange(new_filament_id, new_extruder_id);
-        if (!imex_suppresses_bare_toolchange(m_imex_parallel_mode, m_toolchange_count))
+        // SPLITPRINT: each board has a single extruder, so a head's stream never names a tool.
+        if (m_split_head < 0 && !imex_suppresses_bare_toolchange(m_imex_parallel_mode, m_toolchange_count))
             gcode += toolchange_command;
         if (Extruder *fil = m_writer.filament())
             fil->set_config_index((int)get_filament_config_index((int)fil->id()));

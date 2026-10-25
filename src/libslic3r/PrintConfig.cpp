@@ -362,6 +362,13 @@ static t_config_enum_values s_keys_map_SplitInterfacePattern {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SplitInterfacePattern)
 
+static t_config_enum_values s_keys_map_SplitInterlockMode {
+    { "both",     int(SplitInterlockMode::Both) },
+    { "in_plane", int(SplitInterlockMode::InPlane) },
+    { "layers",   int(SplitInterlockMode::Layers) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SplitInterlockMode)
+
 //BBS
 static t_config_enum_values s_keys_map_WallInfillOrder {
     { "inner wall/outer wall/infill",     int(WallInfillOrder::InnerOuterInfill) },
@@ -7079,6 +7086,16 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels.push_back(L("Rear-right"));
     def->set_default_value(new ConfigOptionEnum<ImexToolLayout>(ImexToolLayout::FrontLeft));
 
+    // SPLITPRINT
+    def = this->add("split_gantry_min_gap", coFloat);
+    def->label = L("Minimum nozzle gap");
+    def->tooltip = L("For two heads printing one object: the closest the two nozzles may come along the split axis "
+                     "before the heads or gantries collide. Only one head works inside this distance of the other.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(60.));
+
     def = this->add("imex_nozzle_clearance_x", coFloat);
     def->label = L("Nozzle Clearance X");
     def->tooltip = L("Distance (mm) from the nozzle to the collision-side carriage edge in X. Used to calculate the width of the collision exclusion strip at each X boundary.");
@@ -7218,12 +7235,44 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(6));
 
-    def = this->add("split_interface_layer_shift", coBool);
-    def->label = L("Alternate fingers every layer");
+    def = this->add("split_interface_interlock", coEnum);
+    def->label = L("Interlock direction");
     def->category = L("Others");
-    def->tooltip = L("Swap which head owns each finger row on every layer, so the joint also interlocks vertically.");
+    def->tooltip = L("Which way the two halves interlock.\n"
+                     "Both: fingers alternate side by side within a layer, and swap every block of layers.\n"
+                     "Within layers: fingers alternate side by side, the same on every layer. "
+                     "The joint is seen from the top only.\n"
+                     "Between layers: each block of layers belongs to one head inside the no-go zone, "
+                     "then the other. The joint is seen from the side only.");
+    def->enum_keys_map = &ConfigOptionEnum<SplitInterlockMode>::get_enum_values();
+    def->enum_values.push_back("both");
+    def->enum_values.push_back("in_plane");
+    def->enum_values.push_back("layers");
+    def->enum_labels.push_back(L("Both"));
+    def->enum_labels.push_back(L("Within layers"));
+    def->enum_labels.push_back(L("Between layers"));
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(true));
+    def->set_default_value(new ConfigOptionEnum<SplitInterlockMode>(SplitInterlockMode::Both));
+
+    def = this->add("split_interface_layers_per_block", coInt);
+    def->label = L("Layers per finger");
+    def->category = L("Others");
+    def->tooltip = L("How many layers each finger lasts before the heads swap ownership.");
+    def->sidetext = L("layers");
+    def->min = 1;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(1));
+
+    def = this->add("split_interface_finger_width", coInt);
+    def->label = L("Finger width");
+    def->category = L("Others");
+    def->tooltip = L("How many wall lines wide each finger is. A finger one line wide is printed as a "
+                     "separate short line with a retraction before and after it, which makes a large joint "
+                     "slow. Two lines or more join the fingers into the wall around them.");
+    def->sidetext = L("lines");
+    def->min = 1;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(2));
 
     def = this->add("imex_mode_names", coStrings);
     def->label = L("IDEX/IQEX Mode Names");
@@ -9838,6 +9887,11 @@ void PrintConfigDef::init_sla_params()
 void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &value)
 {
     //BBS: handle legacy options
+    // SPLITPRINT: the on/off layer shift became an interlock direction.
+    if (opt_key == "split_interface_layer_shift") {
+        opt_key = "split_interface_interlock";
+        value   = (value == "1" || value == "true") ? "both" : "in_plane";
+    } else
     if (opt_key == "curr_bed_type" && value == "SuperTack Plate") {
         value = "Supertack Plate";
     } else if (opt_key == "enable_wipe_tower") {

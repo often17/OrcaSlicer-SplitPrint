@@ -1,0 +1,17 @@
+{
+	"type": "process",
+	"name": "0.20mm Two-Head Split @LS01",
+	"inherits": "0.20mm Standard @LS01",
+	"from": "system",
+	"setting_id": "o03BiHJbLXF4nyMK",
+	"instantiation": "true",
+	"split_print_enable": "1",
+	"split_axis": "x",
+	"split_nogo_width": "10",
+	"split_interface_length_min": "1",
+	"split_interface_length_max": "4",
+	"split_interface_pattern": "alternating",
+	"compatible_printers": [
+		"LS01 0.4 nozzle"
+	]
+}

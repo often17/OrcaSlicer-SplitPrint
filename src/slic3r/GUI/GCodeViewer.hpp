@@ -169,6 +169,10 @@ public:
 
         Marker marker;
         std::vector<Marker> m_imex_secondary_markers; // one per active secondary carriage in IDEX/IQEX mode
+        // SPLITPRINT: the other head, which prints at the same time as the one at the current move.
+        Marker split_other_marker;
+        bool   m_split_marker_ready{ false };
+        bool   m_show_split_marker{ false };
         GCodeWindow gcode_window;
         float m_scale = 1.0;
         bool m_show_marker = false;
@@ -361,6 +365,7 @@ private:
 
     bool m_contained_in_bed{ true };
 mutable bool m_no_render_path { false };
+    bool m_split_print{ false }; // SPLITPRINT: the preview holds both heads of a split print
     bool m_is_dark = false;
 
     bool  m_belt_view_enabled = false;

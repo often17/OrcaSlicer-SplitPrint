@@ -3386,7 +3386,8 @@ void TabPrint::build()
         optgroup = page->new_optgroup(L("Two heads, one object"), L"advanced");
         for (const char *key : {"split_print_enable", "split_axis", "split_position", "split_nogo_width",
                                 "split_interface_length_min", "split_interface_length_max", "split_interface_pattern",
-                                "split_interface_period", "split_interface_layer_shift"})
+                                "split_interface_period", "split_interface_interlock",
+                                "split_interface_layers_per_block", "split_interface_finger_width"})
             optgroup->append_single_option_line(key);
 
         optgroup = page->new_optgroup(L("Advanced"), L"advanced");
@@ -6082,6 +6083,10 @@ if (is_marlin_flavor)
         optgroup->append_single_option_line("machine_load_filament_time", "printer_multimaterial_advanced#filament-load-time");
         optgroup->append_single_option_line("machine_unload_filament_time", "printer_multimaterial_advanced#filament-unload-time");
         optgroup->append_single_option_line("machine_tool_change_time", "printer_multimaterial_advanced#tool-change-time");
+
+        // SPLITPRINT
+        optgroup = page->new_optgroup(L("Two heads, one object"), L"param_advanced");
+        optgroup->append_single_option_line("split_gantry_min_gap");
 
         // IDEX/IQEX (IMEX) parallel printing configuration
         optgroup = page->new_optgroup(L("IDEX/IQEX Configuration"), L"param_advanced");

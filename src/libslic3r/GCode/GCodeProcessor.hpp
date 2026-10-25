@@ -359,6 +359,10 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         // machine frame and should not be compared against `printable_height`
         // (which lives in the build-volume frame).
         bool machine_frame_transform_active{ false };
+        // SPLITPRINT: the moves are both heads' streams merged on one timeline, and the time
+        // one head alone would take for the same print (0 when not a split print).
+        bool  split_print{ false };
+        float split_one_head_time{ 0.f };
         SettingsIds settings_ids;
         size_t filaments_count;
         bool backtrace_enabled;
@@ -472,6 +476,8 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
             belt_tilt_angle = std::forward<Other>(other).belt_tilt_angle;
             belt_z_origin = std::forward<Other>(other).belt_z_origin;
             machine_frame_transform_active = std::forward<Other>(other).machine_frame_transform_active;
+            split_print = std::forward<Other>(other).split_print;
+            split_one_head_time = std::forward<Other>(other).split_one_head_time;
 #if ENABLE_GCODE_VIEWER_STATISTICS
             time = std::forward<Other>(other).time;
 #endif

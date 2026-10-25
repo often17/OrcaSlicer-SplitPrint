@@ -20,6 +20,12 @@ enum class InterfacePattern {
     Sine,        // smooth wave between min and max with `period` rows per cycle
 };
 
+enum class Interlock {
+    Both,    // rows alternate within a layer, and swap owner every block of layers
+    InPlane, // rows alternate within a layer, the same on every layer
+    Layers,  // every row of a layer has one owner, which swaps every block of layers
+};
+
 struct SplitParams
 {
     SplitAxis        axis        = SplitAxis::X;
@@ -30,7 +36,8 @@ struct SplitParams
     coord_t          length_max  = 0;
     InterfacePattern pattern     = InterfacePattern::Alternating;
     int              period      = 4; // rows per cycle for Sine
-    bool             layer_shift = true; // flip row ownership every layer
+    Interlock        interlock   = Interlock::Both;
+    int              layers_per_block = 1; // layers a finger lasts before the owner swaps
     uint32_t         seed        = 0;
 
     coord_t band_lo() const { return split_pos - nogo_width / 2; }

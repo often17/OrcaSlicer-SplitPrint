@@ -197,6 +197,8 @@ enum class NotificationType
     // Active preset references a capability the installed+loaded plugin does not provide (outdated
     // plugin). Informational; cannot be auto-resolved; persistent, blocks slicing.
     OrcaPluginCapabilityUnavailableError,
+    // SPLITPRINT: after slicing a split part, whether one head or two is faster.
+    SplitPrintSpeedTip,
     NotificationTypeCount
 
 };

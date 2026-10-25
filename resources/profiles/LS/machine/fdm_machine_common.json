@@ -1,0 +1,16 @@
+{
+	"type": "machine",
+	"name": "fdm_machine_common",
+	"from": "system",
+	"instantiation": "false",
+	"printer_technology": "FFF",
+	"gcode_flavor": "marlin",
+	"extruder_clearance_radius": "65",
+	"extruder_clearance_height_to_rod": "36",
+	"extruder_clearance_height_to_lid": "140",
+	"single_extruder_multi_material": "0",
+	"change_filament_gcode": "",
+	"before_layer_change_gcode": ";BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n",
+	"machine_start_gcode": "",
+	"machine_end_gcode": ""
+}

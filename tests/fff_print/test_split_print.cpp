@@ -1,0 +1,336 @@
+#include <catch2/catch_all.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstddef>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "catch2/catch_test_macros.hpp"
+#include "catch2/matchers/catch_matchers_floating_point.hpp"
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Config.hpp"
+#include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/GCode/ToolOrdering.hpp"
+#include "libslic3r/Layer.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/Print.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/SplitPrint/Scheduler.hpp"
+#include "libslic3r/Surface.hpp"
+
+#include "test_helpers.hpp"
+#include "test_utils.hpp"
+
+#include <boost/filesystem/operations.hpp>
+
+using namespace Slic3r;
+using namespace Slic3r::Test;
+using Catch::Matchers::WithinRel;
+
+namespace {
+
+// Two heads, a 40 mm cube split at its centre with a 10 mm no-go zone.
+DynamicPrintConfig split_config(bool enabled)
+{
+    DynamicPrintConfig config = multifilament_config(2);
+    config.set_deserialize_strict({
+        {"layer_height", "0.2"},
+        {"initial_layer_print_height", "0.2"},
+        {"split_print_enable", enabled ? "1" : "0"},
+        {"split_axis", "x"},
+        {"split_position", "0"},
+        {"split_nogo_width", "10"},
+        {"split_interface_length_min", "1"},
+        {"split_interface_length_max", "4"},
+        // Two heads share Z: a lift by one would lift the other mid-line.
+        {"z_hop", "0,0"},
+        {"printable_area", "0x0,400x0,400x400,0x400"},
+        {"split_gantry_min_gap", "60"},
+        {"skirt_loops", "0"},
+        {"brim_type", "no_brim"},
+    });
+    return config;
+}
+
+// Area of every layer printed by each head (index 0 = extruder 1), summed over the object.
+std::array<double, 2> area_by_head(const Print &print)
+{
+    std::array<double, 2> area{0., 0.};
+    for (const Layer *layer : print.objects().front()->layers())
+        for (const LayerRegion *layerm : layer->regions()) {
+            const int filament = layerm->region().config().outer_wall_filament_id.value;
+            if (filament >= 1 && filament <= 2)
+                area[filament - 1] += Slic3r::area(to_expolygons(layerm->slices.surfaces));
+        }
+    return area;
+}
+
+bool every_layer_uses_both_heads(Print &print)
+{
+    ToolOrdering &to = const_cast<ToolOrdering &>(print.tool_ordering());
+    for (const LayerTools &lt : to.layer_tools())
+        if (lt.has_object && std::count_if(lt.extruders.begin(), lt.extruders.end(), [](unsigned e) { return e <= 1; }) != 2)
+            return false;
+    return !to.layer_tools().empty();
+}
+
+} // namespace
+
+TEST_CASE("Split print gives each head its half of every layer", "[SplitPrint]")
+{
+    Print print;
+    Model model;
+    init_print({cube(40)}, print, model, split_config(true));
+    print.process();
+
+    CHECK(every_layer_uses_both_heads(print));
+    // Split at the centre of a symmetric cube: both heads print the same area.
+    const std::array<double, 2> area = area_by_head(print);
+    REQUIRE(area[0] > 0.);
+    CHECK_THAT(area[1], WithinRel(area[0], 0.05));
+}
+
+TEST_CASE("Split print off leaves the object to one head", "[SplitPrint]")
+{
+    Print print;
+    Model model;
+    init_print({cube(40)}, print, model, split_config(false));
+    print.process();
+
+    const std::array<double, 2> area = area_by_head(print);
+    CHECK(area[0] > 0.);
+    CHECK(area[1] == 0.);
+}
+
+TEST_CASE("Printed lines fill the no-go zone so the halves join", "[SplitPrint]")
+{
+    const char *interlock = GENERATE("both", "in_plane", "layers");
+    INFO("interlock: " << interlock);
+    DynamicPrintConfig config = split_config(true);
+    config.set_deserialize_strict({{"split_interface_interlock", interlock}, {"split_interface_layers_per_block", "2"}});
+    Print print;
+    Model model;
+    init_print({cube(40)}, print, model, config);
+    print.process();
+
+    const PrintObject &object = *print.objects().front();
+    const Layer       &layer  = *object.layers()[object.layers().size() / 2];
+    const BoundingBox  bbox   = get_extents(layer.lslices);
+    // The 10 mm zone around the centre, clipped to the part.
+    BoundingBox band(Point(bbox.center().x() - scaled<coord_t>(5.), bbox.min.y()), Point(bbox.center().x() + scaled<coord_t>(5.), bbox.max.y()));
+    const ExPolygons zone = intersection_ex(layer.lslices, Polygons{band.polygon()});
+
+    std::array<Polygons, 2> printed;
+    for (const LayerRegion *layerm : layer.regions()) {
+        const int filament = layerm->region().config().outer_wall_filament_id.value;
+        if (filament < 1 || filament > 2)
+            continue;
+        append(printed[filament - 1], layerm->perimeters.polygons_covered_by_width());
+        append(printed[filament - 1], layerm->fills.polygons_covered_by_width());
+    }
+    const double zone_area = area(zone);
+    REQUIRE(zone_area > 0.);
+    // Both heads print inside the zone, and together they leave no gap.
+    CHECK(area(intersection_ex(zone, printed[0])) > 0.1 * zone_area);
+    CHECK(area(intersection_ex(zone, printed[1])) > 0.1 * zone_area);
+    // The two heads' lines touch along the whole depth of the part.
+    const coord_t       touch = scaled<coord_t>(0.05);
+    const BoundingBox   joint = get_extents(intersection(offset(printed[0], touch), offset(printed[1], touch)));
+    REQUIRE(joint.defined);
+    CHECK(joint.size().y() > 0.9 * bbox.size().y());
+    if (std::string(interlock) != "layers") {
+        Polygons both = printed[0];
+        append(both, printed[1]);
+        // Rows alternate across the whole zone, so it is all finger lines and far denser than
+        // sparse infill (about 25% here); only small voids at finger tips stay empty.
+        // With "layers" each head owns solid areas of the zone, which get normal infill.
+        CHECK(area(intersection_ex(zone, union_(both))) > 0.9 * zone_area);
+    }
+}
+
+namespace {
+
+// Slices `mesh` centred on a 400 x 400 bed and exports it, keeping the two head streams.
+void export_split(const TriangleMesh &mesh, std::array<std::vector<std::string>, 2> &heads, GCodeProcessorResult &result)
+{
+    DynamicPrintConfig config = split_config(true);
+    Print print;
+    Model model;
+    init_print({mesh}, print, model, config);
+    model.center_instances_around_point(Vec2d(200., 200.));
+    DynamicPrintConfig full = DynamicPrintConfig::full_print_config();
+    full.apply(config);
+    print.apply(model, full);
+    print.process();
+    ScopedTemporaryFile temp(".gcode");
+    print.export_gcode(temp.string(), &result, nullptr);
+    for (int h = 0; h < 2; ++h) {
+        const std::string path = SplitPrint::head_gcode_path(temp.string(), h);
+        std::ifstream     in(path, std::ios::binary);
+        REQUIRE(in.good());
+        for (std::string line; std::getline(in, line);)
+            heads[h].push_back(line);
+        in.close();
+        boost::filesystem::remove(path);
+    }
+}
+
+SplitPrint::ScheduleParams bed_params()
+{
+    SplitPrint::ScheduleParams p;
+    p.axis    = 'X';
+    p.gap     = 60.;
+    p.bed_min = 0.;
+    p.bed_max = 400.;
+    return p;
+}
+
+bool is_tool_change(const std::string &line) { return line.size() >= 2 && line[0] == 'T' && std::isdigit((unsigned char) line[1]); }
+
+} // namespace
+
+TEST_CASE("Each head gets its own G-code that keeps the heads apart", "[SplitPrint]")
+{
+    std::array<std::vector<std::string>, 2> heads;
+    GCodeProcessorResult                    result;
+    export_split(cube(40), heads, result);
+
+    const std::vector<std::string> errors = SplitPrint::check_streams(heads, bed_params());
+    INFO((errors.empty() ? std::string() : errors.front()));
+    CHECK(errors.empty());
+    for (int h = 0; h < 2; ++h) {
+        // Each board has one extruder: no tool changes, and the head prints something.
+        CHECK(std::none_of(heads[h].begin(), heads[h].end(), is_tool_change));
+        CHECK(std::count_if(heads[h].begin(), heads[h].end(), [](const std::string &l) { return l.rfind("G1 X", 0) == 0 && l.find(" E") != std::string::npos; }) > 100);
+    }
+    CHECK(SplitPrint::sync_lines(heads[0]).size() == SplitPrint::sync_lines(heads[1]).size());
+}
+
+TEST_CASE("Split preview shows both heads on one timeline", "[SplitPrint]")
+{
+    std::array<std::vector<std::string>, 2> heads;
+    GCodeProcessorResult                    result;
+    export_split(cube(40), heads, result);
+
+    REQUIRE(result.split_print);
+    CHECK(result.split_one_head_time > 0.f);
+    bool head[2] = {false, false};
+    for (const GCodeProcessorResult::MoveVertex &m : result.moves)
+        if (m.type == EMoveType::Extrude && m.extruder_id < 2)
+            head[m.extruder_id] = true;
+    CHECK(head[0]);
+    CHECK(head[1]);
+}
+
+TEST_CASE("A long part prints faster with two heads", "[SplitPrint]")
+{
+    // 300 mm long: most of each half is more than the 60 mm gap away from the other head.
+    std::array<std::vector<std::string>, 2> heads;
+    GCodeProcessorResult                    result;
+    export_split(make_cube(300., 30., 1.), heads, result);
+
+    const float two_heads = result.print_statistics.modes[0].time;
+    REQUIRE(result.split_one_head_time > 0.f);
+    // Ideal is half; the middle and the layer changes cost some of it.
+    CHECK(two_heads < 0.7f * result.split_one_head_time);
+}
+
+TEST_CASE("Old layer shift setting loads as an interlock direction", "[SplitPrint]")
+{
+    const bool on = GENERATE(true, false);
+    DynamicPrintConfig config;
+    config.set_deserialize_strict({{"split_interface_layer_shift", on ? "1" : "0"}});
+    REQUIRE(config.has("split_interface_interlock"));
+    CHECK(config.opt_serialize("split_interface_interlock") == (on ? "both" : "in_plane"));
+}
+
+TEST_CASE("Turning split print off on an existing print rebuilds its regions", "[SplitPrint]")
+{
+    Print print;
+    Model model;
+    init_print({cube(40)}, print, model, split_config(true));
+    print.process();
+    REQUIRE(area_by_head(print)[1] > 0.);
+
+    print.apply(model, split_config(false));
+    print.process();
+    CHECK(area_by_head(print)[1] == 0.);
+}
+
+TEST_CASE("Slicing again over the old files writes both heads anew", "[SplitPrint]")
+{
+    // The app slices each time to the same temporary path, so the files of the last slice are
+    // still there: a 2 mm cube is 10 layers at 0.2 mm, the 4 mm one that replaces it 20.
+    DynamicPrintConfig config = split_config(true);
+    DynamicPrintConfig full   = DynamicPrintConfig::full_print_config();
+    full.apply(config);
+    ScopedTemporaryFile temp(".gcode");
+    Print               print;
+    for (const double height : {2., 4.}) {
+        Model model;
+        init_print({make_cube(40., 40., height)}, print, model, config);
+        model.center_instances_around_point(Vec2d(200., 200.));
+        print.apply(model, full);
+        print.process();
+        GCodeProcessorResult result;
+        REQUIRE_NOTHROW(print.export_gcode(temp.string(), &result, nullptr));
+        for (int h = 0; h < 2; ++h) {
+            std::vector<std::string> lines;
+            std::ifstream            in(SplitPrint::head_gcode_path(temp.string(), h), std::ios::binary);
+            for (std::string line; std::getline(in, line);)
+                lines.push_back(line);
+            const size_t layer_syncs = std::count_if(lines.begin(), lines.end(), [](const std::string &l) {
+                return l.rfind("; SPLITPRINT_SYNC L", 0) == 0 && l.find_first_of(".z", 19) == std::string::npos;
+            });
+            INFO("height " << height << " head " << h);
+            CHECK(layer_syncs == size_t(std::lround(height / 0.2)));
+        }
+    }
+    for (int h = 0; h < 2; ++h)
+        boost::filesystem::remove(SplitPrint::head_gcode_path(temp.string(), h));
+}
+
+TEST_CASE("Fingers two lines wide do not need a retraction each", "[SplitPrint]")
+{
+    // A 200 mm long joint on 5 sparse layers. Fingers one line wide are separate short lines,
+    // each with its own retraction; two lines wide, they are part of the wall around them.
+    auto head_retractions = [](const char *finger_width) {
+        DynamicPrintConfig config = split_config(true);
+        config.set_deserialize_strict({{"wall_generator", "arachne"}, {"retraction_length", "0.8,0.8"},
+                                       {"split_interface_finger_width", finger_width},
+                                       {"bottom_shell_layers", "0"}, {"top_shell_layers", "0"}});
+        Print print;
+        Model model;
+        init_print({make_cube(100., 200., 1.)}, print, model, config);
+        model.center_instances_around_point(Vec2d(200., 200.));
+        DynamicPrintConfig full = DynamicPrintConfig::full_print_config();
+        full.apply(config);
+        print.apply(model, full);
+        print.process();
+        ScopedTemporaryFile  temp(".gcode");
+        GCodeProcessorResult result;
+        print.export_gcode(temp.string(), &result, nullptr);
+        size_t retractions = 0;
+        for (int h = 0; h < 2; ++h) {
+            const std::string path = SplitPrint::head_gcode_path(temp.string(), h);
+            {
+                std::ifstream in(path, std::ios::binary);
+                for (std::string line; std::getline(in, line);)
+                    if (line.rfind("G1 E-", 0) == 0)
+                        ++retractions;
+            }
+            boost::filesystem::remove(path);
+        }
+        return retractions;
+    };
+    const size_t one_line  = head_retractions("1");
+    const size_t two_lines = head_retractions("2");
+    // About 110 fingers per head on each of the 5 layers with one-line fingers.
+    CHECK(one_line > 1000);
+    CHECK(two_lines * 4 < one_line);
+}

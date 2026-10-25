@@ -39,6 +39,7 @@
 #include "libslic3r/Config.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/SplitPrint/Scheduler.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
@@ -271,6 +272,8 @@ std::string slice_two_color_cube_and_export(DynamicPrintConfig cfg, bool is_bbl,
     in.close();
     boost::system::error_code ec;
     fs::remove(tmp, ec);
+    for (int head = 0; head < 2; ++head) // SPLITPRINT: a split print also writes one file per head
+        fs::remove(SplitPrint::head_gcode_path(tmp.string(), head), ec);
     print.output_filename(); // names the export as the app does, expanding filename_format
     return out;
 }

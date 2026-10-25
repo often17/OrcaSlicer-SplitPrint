@@ -67,6 +67,18 @@ class CheckTest(unittest.TestCase):
         t1 = "G1 X90\n; SPLITPRINT_SYNC 1\nG1 X58 E1\n"
         self.assertEqual(self.run_pair(t0, t1), 1)
 
+    def test_end_gcode_after_the_end_sync_is_not_checked(self):
+        # After the end sync each head homes and parks on its own, like the default end G-code.
+        t0 = "G1 X10\n; SPLITPRINT_SYNC 1\nG1 X20 E1\n; SPLITPRINT_SYNC end\nG28\nG1 X90\n"
+        t1 = "G1 X90\n; SPLITPRINT_SYNC 1\nG1 X80 E1\n; SPLITPRINT_SYNC end\nG28\n"
+        self.assertEqual(self.run_pair(t0, t1), 0)
+
+    def test_park_before_the_first_sync_sets_the_start_position(self):
+        # The slicer parks each head at its own bed end right before the first layer sync.
+        t0 = "G1 X50 Y5\nG1 X0 F7200 ; SPLITPRINT park before the first layer\n; SPLITPRINT_SYNC L0\nG1 X20 E1\n"
+        t1 = "G1 X50 Y5\nG1 X100 F7200 ; SPLITPRINT park before the first layer\n; SPLITPRINT_SYNC L0\nG1 X80 E1\n"
+        self.assertEqual(self.run_pair(t0, t1), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

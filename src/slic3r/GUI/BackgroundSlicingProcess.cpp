@@ -38,6 +38,8 @@
 // Print now includes tbb, and tbb includes Windows. This breaks compilation of wxWidgets if included before wx.
 #include "libslic3r/Print.hpp"
 #include "libslic3r/SLAPrint.hpp"
+#include "libslic3r/SplitPrint/Export.hpp"
+#include "libslic3r/SplitPrint/Scheduler.hpp"
 #include "libslic3r/Utils.hpp"
 #include "PostProcessor.hpp"
 #include "libslic3r/Format/SL1.hpp"
@@ -840,6 +842,22 @@ bool BackgroundSlicingProcess::invalidate_all_steps()
 // G-code is generated in m_temp_output_path.
 // Optionally run a post-processing script on a copy of m_temp_output_path.
 // Copy the final G-code to target location (possibly a SD card, if it is a removable media, then verify that the file was written without an error).
+// SPLITPRINT: a split print writes one G-code per head next to the combined preview file
+// (part.T0.gcode, part.T1.gcode). Those are the files the printer runs, so export them too.
+static void export_split_head_files(const Print &print, const std::string &temp_path, const std::string &export_path, bool removable)
+{
+    if (!SplitPrint::print_is_split(print))
+        return;
+    for (int head = 0; head < 2; ++head) {
+        const std::string src = SplitPrint::head_gcode_path(temp_path, head);
+        const std::string dst = SplitPrint::head_gcode_path(export_path, head);
+        std::string       error_message;
+        if (copy_file(src, dst, error_message, removable) != CopyFileResult::SUCCESS)
+            // TRN %1% is the head number (0 or 1), %2% the file path, %3% the system error message.
+            throw Slic3r::ExportError(GUI::format(_L("Failed to save the G-code of head %1% to %2%.\nError message: %3%."), head, dst, error_message));
+    }
+}
+
 void BackgroundSlicingProcess::finalize_gcode()
 {
     m_print->set_status(95, _u8L("Running post-processing scripts"));
@@ -911,6 +929,7 @@ void BackgroundSlicingProcess::finalize_gcode()
         BOOST_LOG_TRIVIAL(error) << "Unexpected fail code(" << (int) copy_ret_val << ") durring copy_file() to " << export_path << ".";
         break;
     }
+    export_split_head_files(*m_fff_print, m_temp_output_path, export_path, m_export_path_on_removable_media); // SPLITPRINT
     if (m_export_statistics)
         export_gcode_statistics(*m_gcode_result, gcode_statistics_path(export_path));
 
@@ -960,6 +979,7 @@ void BackgroundSlicingProcess::export_gcode()
         // throw Slic3r::ExportError(_utf8(L("Unknown error when exporting G-code.")));
         break;
     }
+    export_split_head_files(*m_fff_print, m_temp_output_path, export_path, m_export_path_on_removable_media); // SPLITPRINT
     if (m_export_statistics)
         export_gcode_statistics(*m_gcode_result, gcode_statistics_path(export_path));
 

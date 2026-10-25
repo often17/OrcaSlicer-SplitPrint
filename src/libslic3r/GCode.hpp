@@ -52,6 +52,7 @@
 #include "BoundingBox.hpp"
 #include "Polyline.hpp"
 #include "BeltBrim.hpp"
+#include "SplitPrint/Splitter.hpp" // SPLITPRINT
 
 namespace Slic3r { class ExtrusionEntityCollection; }
 
@@ -260,6 +261,8 @@ public:
     // throws CanceledException through print->throw_if_canceled().
     void            do_export(Print* print, const char* path, GCodeProcessorResult* result = nullptr, ThumbnailsGeneratorCallback thumbnail_cb = nullptr);
     void            export_layer_filaments(GCodeProcessorResult* result);
+    // SPLITPRINT: write only head `head`'s work (0 or 1), with sync markers; -1 writes everything.
+    void            set_split_head(int head) { m_split_head = head; }
     //BBS: set offset for gcode writer
     void set_gcode_offset(double x, double y) { m_writer.set_xy_offset(x, y); m_processor.set_xy_offset(x, y);}
     // IMEX firmware-managed slice: writer offset is augmented by the IMEX shift so the
@@ -887,6 +890,10 @@ protected:
     // Set at the start of export. Empty string means non-IMEX or not yet set.
     // PA and temperature tool-qualification is only applied when this is not "primary".
     std::string m_imex_parallel_mode;
+    // SPLITPRINT: the head whose stream this export writes, -1 for the combined preview stream.
+    int m_split_head = -1;
+    // SPLITPRINT: split line of each object, for printing a layer in near / far phases.
+    std::map<const PrintObject*, SplitPrint::SplitParams> m_split_params;
     // IMEX: parsed per-plate head→filament overrides (physical T-index → 1-based filament slot).
     // Cached from imex_head_filament_map at print start. Empty map means "fall back to pem".
     std::map<int,int> m_imex_head_filament_map;

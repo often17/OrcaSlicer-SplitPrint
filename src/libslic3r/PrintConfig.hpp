@@ -282,6 +282,14 @@ enum class SplitInterfacePattern {
     Count,
 };
 
+// SPLITPRINT: which way the two halves interlock.
+enum class SplitInterlockMode {
+    Both,    // rows alternate within a layer and swap every block of layers
+    InPlane, // rows alternate within a layer, same on every layer
+    Layers,  // the whole band swaps owner every block of layers
+    Count,
+};
+
 // IMEX: color theme for the bed-zone visualization. Colorblind-friendly variants
 // are provided for users with color-vision differences.
 enum class ImexVizTheme {
@@ -821,6 +829,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(IroningType)
 // SPLITPRINT
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SplitPrintAxis)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SplitInterfacePattern)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SplitInterlockMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SlicingMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(BeltRotationAxis)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(RemapAxis)
@@ -1467,7 +1476,9 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,                        split_interface_length_max))
     ((ConfigOptionEnum<SplitInterfacePattern>,  split_interface_pattern))
     ((ConfigOptionInt,                          split_interface_period))
-    ((ConfigOptionBool,                         split_interface_layer_shift))
+    ((ConfigOptionEnum<SplitInterlockMode>,     split_interface_interlock))
+    ((ConfigOptionInt,                          split_interface_layers_per_block))
+    ((ConfigOptionInt,                          split_interface_finger_width))
 )
 
 // This object is mapped to Perl as Slic3r::Config::PrintRegion.
@@ -1855,6 +1866,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionStrings,             imex_mode_names))
     ((ConfigOptionStrings,             imex_mode_active_tools))
     ((ConfigOptionStrings,             imex_mode_gcodes))
+    // SPLITPRINT: closest the two nozzles may come along the split axis.
+    ((ConfigOptionFloat,               split_gantry_min_gap))
     ((ConfigOptionBool,                single_extruder_multi_material_priming))
     ((ConfigOptionEnum<ToolChangeOrderingType>, toolchange_ordering))
     ((ConfigOptionString,              toolchange_cyclic_order))

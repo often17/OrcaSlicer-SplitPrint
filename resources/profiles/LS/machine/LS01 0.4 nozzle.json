@@ -1,0 +1,172 @@
+{
+	"type": "machine",
+	"name": "LS01 0.4 nozzle",
+	"inherits": "fdm_klipper_common",
+	"from": "system",
+	"setting_id": "6OwgM7xnGu4cKr3g",
+	"instantiation": "true",
+	"printer_model": "LS01",
+	"printer_variant": "0.4",
+	"default_print_profile": "0.20mm Standard @LS01",
+	"default_filament_profile": [
+		"Generic PLA @System"
+	],
+	"printable_area": [
+		"0x0",
+		"800x0",
+		"800x800",
+		"0x800"
+	],
+	"printable_height": "800",
+	"nozzle_diameter": [
+		"0.4",
+		"0.4"
+	],
+	"extruder_offset": [
+		"0x0",
+		"0x0"
+	],
+	"extruder_colour": [
+		"#26A69A",
+		"#E53935"
+	],
+	"min_layer_height": [
+		"0.08",
+		"0.08"
+	],
+	"max_layer_height": [
+		"0.32",
+		"0.32"
+	],
+	"nozzle_type": [
+		"undefine",
+		"undefine"
+	],
+	"retraction_length": [
+		"0.8",
+		"0.8"
+	],
+	"retraction_speed": [
+		"35",
+		"35"
+	],
+	"deretraction_speed": [
+		"35",
+		"35"
+	],
+	"retraction_minimum_travel": [
+		"1",
+		"1"
+	],
+	"retract_before_wipe": [
+		"70%",
+		"70%"
+	],
+	"retract_when_changing_layer": [
+		"1",
+		"1"
+	],
+	"retract_length_toolchange": [
+		"0",
+		"0"
+	],
+	"z_hop": [
+		"0",
+		"0"
+	],
+	"split_gantry_min_gap": "60",
+	"wipe": [
+		"1",
+		"1"
+	],
+	"machine_max_acceleration_e": [
+		"5000",
+		"5000",
+		"5000",
+		"5000"
+	],
+	"machine_max_acceleration_extruding": [
+		"10000",
+		"10000",
+		"10000",
+		"10000"
+	],
+	"machine_max_acceleration_retracting": [
+		"5000",
+		"5000",
+		"5000",
+		"5000"
+	],
+	"machine_max_acceleration_travel": [
+		"10000",
+		"10000",
+		"10000",
+		"10000"
+	],
+	"machine_max_acceleration_x": [
+		"10000",
+		"10000",
+		"10000",
+		"10000"
+	],
+	"machine_max_acceleration_y": [
+		"10000",
+		"10000",
+		"10000",
+		"10000"
+	],
+	"machine_max_acceleration_z": [
+		"200",
+		"200",
+		"200",
+		"200"
+	],
+	"machine_max_speed_e": [
+		"30",
+		"30",
+		"30",
+		"30"
+	],
+	"machine_max_speed_x": [
+		"500",
+		"500",
+		"500",
+		"500"
+	],
+	"machine_max_speed_y": [
+		"500",
+		"500",
+		"500",
+		"500"
+	],
+	"machine_max_speed_z": [
+		"15",
+		"15",
+		"15",
+		"15"
+	],
+	"machine_max_jerk_e": [
+		"2.5",
+		"2.5",
+		"2.5",
+		"2.5"
+	],
+	"machine_max_jerk_x": [
+		"9",
+		"9",
+		"9",
+		"9"
+	],
+	"machine_max_jerk_y": [
+		"9",
+		"9",
+		"9",
+		"9"
+	],
+	"machine_max_jerk_z": [
+		"0.4",
+		"0.4",
+		"0.4",
+		"0.4"
+	]
+}

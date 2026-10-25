@@ -14,8 +14,9 @@ in that interval and requires:
   3. Shared Z: Z changes only after a sync and before any extrusion in that
      interval, and both heads reach the same Z in the same interval.
 
-Moves before the first sync (start G-code, homing) are not checked; this is
-reported as a warning.
+Moves before the first sync (start G-code, homing) are not checked, and neither
+are moves after the ``end`` sync (each head's own end G-code, which may home).
+Both are reported as warnings.
 
 Usage: check.py T0.gcode T1.gcode --axis x --gap 60 --band 45 55
 Exit code 0 = safe, 1 = violation, 2 = bad input.
@@ -27,6 +28,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 
+END_SYNC = "end"  # written by the slicer before each head's end G-code
 SYNC_RE = re.compile(r";\s*SPLITPRINT_SYNC\s+(\S+)")
 WORD_RE = re.compile(r"([A-Za-z])\s*([-+]?(?:\d+\.?\d*|\.\d+))")
 
@@ -54,7 +56,8 @@ class Interval:
 class Stream:
     path: str
     intervals: list = field(default_factory=list)
-    unchecked_moves: int = 0
+    unchecked_moves: int = 0  # before the first sync
+    unchecked_end: int = 0    # after the end sync
 
 
 def parse(path, axis, band):
@@ -63,10 +66,18 @@ def parse(path, axis, band):
     pos = {"X": 0.0, "Y": 0.0, "Z": 0.0, "E": 0.0}
     absolute, abs_e = True, True
     cur = None
+    ended = False
     a = axis.upper()
     with open(path, encoding="utf-8", errors="replace") as f:
         for n, raw in enumerate(f, 1):
             m = SYNC_RE.search(raw)
+            if m and not ended and m.group(1) == END_SYNC:
+                ended = True
+                continue
+            if ended:
+                if raw.split(";", 1)[0].strip():
+                    s.unchecked_end += 1
+                continue
             if m:
                 cur = Interval(m.group(1))
                 s.intervals.append(cur)
@@ -177,6 +188,8 @@ def main(argv=None):
     for s in (t0, t1):
         if s.unchecked_moves:
             print(f"warning: {s.path}: {s.unchecked_moves} moves before the first sync are not checked")
+        if s.unchecked_end:
+            print(f"warning: {s.path}: {s.unchecked_end} lines after the end sync are not checked")
     errors = check(t0, t1, args.gap)
     for e in errors:
         print("FAIL", e)

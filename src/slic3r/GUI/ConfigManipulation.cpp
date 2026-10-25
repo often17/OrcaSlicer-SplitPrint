@@ -1299,8 +1299,12 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     // SPLITPRINT
     const bool split_print = config->opt_bool("split_print_enable");
     for (const char *key : {"split_axis", "split_position", "split_nogo_width", "split_interface_length_min",
-                            "split_interface_length_max", "split_interface_pattern", "split_interface_layer_shift"})
+                            "split_interface_length_max", "split_interface_pattern", "split_interface_interlock",
+                            "split_interface_finger_width"})
         toggle_line(key, split_print);
+    // A finger made in-plane only never swaps, so it has no layer count.
+    toggle_line("split_interface_layers_per_block", split_print &&
+                config->opt_enum<SplitInterlockMode>("split_interface_interlock") != SplitInterlockMode::InPlane);
     toggle_line("split_interface_period", split_print &&
                 config->opt_enum<SplitInterfacePattern>("split_interface_pattern") == SplitInterfacePattern::Sine);
 

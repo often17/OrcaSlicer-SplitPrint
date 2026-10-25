@@ -1484,7 +1484,7 @@ static std::vector<std::string> s_Preset_print_options{
     // SPLITPRINT
     "split_print_enable", "split_axis", "split_position", "split_nogo_width",
     "split_interface_length_min", "split_interface_length_max", "split_interface_pattern",
-    "split_interface_period", "split_interface_layer_shift",
+    "split_interface_period", "split_interface_interlock", "split_interface_layers_per_block", "split_interface_finger_width",
     // Z Anti-Aliasing (ZAA)
     "zaa_enabled",
     "zaa_minimize_perimeter_height",
@@ -1607,6 +1607,7 @@ static std::vector<std::string> s_Preset_printer_options {
     "is_imex", "imex_firmware_managed_zones",
     "imex_gantry_count", "imex_tools_per_gantry", "imex_tool_layout",
     "imex_nozzle_clearance_x", "imex_nozzle_clearance_y", "imex_carriage_margin", "imex_viz_theme",
+    "split_gantry_min_gap",
     "imex_mode_names", "imex_mode_active_tools", "imex_mode_gcodes",
     // Multi-nozzle count + pre-heat model printer options
     "extruder_max_nozzle_count", "group_algo_with_time", "enable_pre_heating", "hotend_heating_rate", "hotend_cooling_rate",

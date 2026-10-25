@@ -26,6 +26,7 @@ add_executable(${_TEST_NAME}_tests
 	test_print.cpp
 	test_printobject.cpp
 	test_mixed_filament.cpp
+	test_split_print.cpp
 	test_seam_placer.cpp
 	test_skirt_brim.cpp
 	test_slicing_pipeline_hook.cpp

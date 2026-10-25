@@ -1117,6 +1117,8 @@ void GCodeViewer::SequentialView::render_marker(const bool has_render_path, int 
         // IDEX/IQEX secondary carriage markers
         for (auto& sec : m_imex_secondary_markers)
             sec.render(canvas_width, canvas_height, view_type);
+        if (m_show_split_marker) // SPLITPRINT
+            split_other_marker.render(canvas_width, canvas_height, view_type);
     }
 }
 
@@ -1407,6 +1409,7 @@ void GCodeViewer::load_as_gcode(const GCodeProcessorResult& gcode_result, const 
     // below still reads print.config(), which Plater::load_gcode() fills from the file's own
     // config block (GCodeProcessor::export_config_for_render).
     m_belt_view_enabled = gcode_result.belt_tilt_angle > 0.f;
+    m_split_print       = gcode_result.split_print; // SPLITPRINT
     m_belt_angle_deg    = gcode_result.belt_tilt_angle;
 
     const bool current_top_layer_only = m_viewer.is_top_layer_only_view_range();
@@ -1955,6 +1958,7 @@ void GCodeViewer::reset()
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": current result id %1% ")%m_last_result_id;
     m_last_result_id = -1;
     m_belt_layer_zs.clear();
+    m_split_print    = false; // SPLITPRINT
     //BBS: add only gcode mode
     m_only_gcode_in_preview = false;
 
@@ -2407,6 +2411,25 @@ void GCodeViewer::render_markers(int canvas_width, int canvas_height)
             // The primary marker is the one every preview draws, so the carriage colour it may
             // have been given has to come back off when no parallel mode is active.
             m_sequential_view.marker.set_color(SequentialView::Marker::default_color());
+        }
+    }
+    // SPLITPRINT: both heads print at once, so also mark where the other head is now: its
+    // last move before the current one (the preview orders both heads' moves by time).
+    m_sequential_view.m_show_split_marker = false;
+    if (m_split_print) {
+        const uint8_t head = curr_vertex.extruder_id;
+        for (size_t id = m_viewer.get_current_vertex_id(); id-- > 0;) {
+            const libvgcode::PathVertex& v = m_viewer.get_vertex_at(id);
+            if (v.extruder_id == head)
+                continue;
+            if (!m_sequential_view.m_split_marker_ready) {
+                m_sequential_view.split_other_marker.init(m_marker_filename);
+                m_sequential_view.m_split_marker_ready = true;
+            }
+            m_sequential_view.split_other_marker.set_world_position(libvgcode::convert(v.position));
+            m_sequential_view.split_other_marker.set_z_offset(m_z_offset + 0.5f);
+            m_sequential_view.m_show_split_marker = true;
+            break;
         }
     }
     m_sequential_view.render_marker(!m_no_render_path, canvas_width, sequential_view_height(canvas_height), m_viewer.get_view_type());

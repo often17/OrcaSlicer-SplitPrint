@@ -41,9 +41,12 @@ join in the middle through **interleaved fingers of variable length**. A
                     |    |<--------------------------------- row k+3
                   split-W/2   split   split+W/2
 ```
-- Rows are one line pitch tall on a global grid (anchored at 0), so all layers line up.
-- A row's owner alternates T0/T1. With `split_interface_layer_shift`, the parity also
-  flips every layer, so the joint locks in Z.
+- Rows are `split_interface_finger_width` line pitches tall (default 2) on a global grid
+  (anchored at 0), so all layers line up. One-line fingers each need a retraction and
+  made a 510 mm cylinder slower with two heads than with one.
+- `split_interface_interlock`: `both` = rows alternate T0/T1 and swap every
+  `split_interface_layers_per_block` layers; `in_plane` = rows alternate, same every
+  layer; `layers` = the whole band swaps owner every block of layers.
 - A T0 finger reaches `split + L`, a T1 finger reaches `split - L`, with `L` in
   [min, max] from the pattern (alternating / random / sine). `L <= W/2`.
 
@@ -80,9 +83,13 @@ supports that cross the split (each support goes to the side it stands on).
 | Piece | Where |
 |---|---|
 | Split + fingers geometry (pure) | `src/libslic3r/SplitPrint/Splitter.{hpp,cpp}` |
+| One head vs two time | merged preview timeline in `SplitPrint/Export.cpp`, notification in `Plater.cpp` |
 | Pipeline hook | `apply_split_print()` next to `apply_mm_segmentation` in `src/libslic3r/PrintObjectSlice.cpp` |
 | Options | `PrintConfig.{hpp,cpp}`, `Preset.cpp` lists, `PrintObject::invalidate_state_by_config_options`, `Tab.cpp` |
-| Two streams + scheduler | `src/libslic3r/SplitPrint/Scheduler.{hpp,cpp}`, hook in `GCode.cpp` |
+| Two streams + export | `src/libslic3r/SplitPrint/Export.{hpp,cpp}`, hooks in `Print::export_gcode`, `GCode.cpp`, `BackgroundSlicingProcess.cpp` |
+| Near / far phases (parallel printing) | `src/libslic3r/SplitPrint/Phases.{hpp,cpp}`, island loop in `GCode::process_layer` |
+| Scheduler + in-slicer check | `src/libslic3r/SplitPrint/Scheduler.{hpp,cpp}` |
+| Preview: second head marker | `GCodeViewer::render_markers` |
 | Independent checker | `tools/splitprint/check.py` |
 | Klipper coordinator (host) | `tools/splitprint/run_dual.py` (runs `check.py` first, refuses to start on failure) |
 | Klipper config examples | `tools/splitprint/klipper/printer_t0.cfg`, `printer_t1.cfg` |
@@ -95,17 +102,29 @@ supports that cross the split (each support goes to the side it stands on).
   with `Splitter`. `apply_mm_segmentation()` (which now takes the shapes as an
   argument) moves them into those regions. Perimeters, infill and tool ordering then
   run unchanged.
-- Until Phase 4 the output is one stream with tool changes. That is only good for the
-  preview, **never for printing**.
+- Export writes `part.T0.gcode` and `part.T1.gcode` (the files the printer runs) and
+  the combined `part.gcode`, which has tool changes and is **only for the preview, never
+  for printing**. Design: `docs/HLSD/split_print.md`.
 
 ## Status
 - [x] Clone, branch `splitprint`
 - [x] Build tools installed
-- [ ] Deps build, slicer build
-- [x] Splitter geometry + tests written (not yet compiled)
-- [x] Options + GUI written (not yet compiled)
-- [x] Pipeline hook written (not yet compiled). Milestone M1: preview shows split + fingers
-- [ ] Two streams + scheduler + sync markers
+- [x] Deps build, slicer build (`build_win.bat -s --tests`; VS 2026 Build Tools)
+- [x] Splitter geometry + tests (`libslic3r_tests "[SplitPrint]"`, passing)
+- [x] Options + GUI
+- [x] Pipeline hook + tests (`fff_print_tests "[SplitPrint]"`, passing)
+- [x] Milestone M1: fingers interlock (checked on a rendered layer, and in
+      `fff_print_tests` "Printed lines fill the no-go zone"). In the GUI, hide **Seams**
+      in the legend: both halves' seams line up at the split and look like a gap.
+- [x] Test printer **LS01** (`resources/profiles/LS*`): 800×800×800, 2× 0.4, Klipper.
+      `0.20mm Standard @LS01` = split off (default, keeps the profile validator's
+      filament-change test working); `0.20mm Two-Head Split @LS01` = split on.
+- [x] Interlock direction (`both` / `in_plane` / `layers`) + layers per finger + finger width.
+- [x] One head vs two time, shown as a notification after slicing (from the scheduled
+      streams, so it includes no-go-zone waits).
+- Known unrelated failures: 2 Timeutils tests fail by 1 h on UK-timezone machines around DST change.
+- [x] Two streams + scheduler + sync markers; heads print near/far phases in parallel
+      (300 mm test part: about 42% less time than one head). Preview plays both heads.
 - [x] Python checker (neutral format)
 - [x] Fork: `origin` = https://github.com/often17/OrcaSlicer-SplitPrint, `upstream` = SoftFever
 - [ ] Klipper coordinator `run_dual.py` + example configs

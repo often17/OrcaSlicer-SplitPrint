@@ -1,0 +1,11 @@
+{
+	"type": "machine",
+	"name": "fdm_klipper_common",
+	"inherits": "fdm_machine_common",
+	"from": "system",
+	"instantiation": "false",
+	"gcode_flavor": "klipper",
+	"machine_pause_gcode": "PAUSE",
+	"machine_start_gcode": "{if split_head >= 0}PRINT_START BED_TEMP=[bed_temperature_initial_layer_single] EXTRUDER_TEMP={first_layer_temperature[split_head]}\n{else}PRINT_START BED_TEMP=[bed_temperature_initial_layer_single] T0_TEMP={first_layer_temperature[0]} T1_TEMP={first_layer_temperature[1]}\n{endif}M83\n",
+	"machine_end_gcode": "PRINT_END\n"
+}

@@ -267,12 +267,14 @@ auto run_on_ui_blocking(Fn&& fn) -> std::invoke_result_t<Fn&>
         throw std::runtime_error("OrcaSlicer is closing");
 
     enum : int { Pending, Claimed, Abandoned };
+    // MSVC 2026 does not see the function-local enumerators inside the local struct below.
+    static_assert(Pending == 0);
     // Shared with the queued task, which can outlive an abandoned wait. The task only touches fn
     // after claiming the call, and a claimed call is always waited for, so fn is still alive then.
     struct Call
     {
         std::promise<R>  prom;
-        std::atomic<int> state{Pending};
+        std::atomic<int> state{0}; // Pending
     };
     auto           call = std::make_shared<Call>();
     std::future<R> fut  = call->prom.get_future();

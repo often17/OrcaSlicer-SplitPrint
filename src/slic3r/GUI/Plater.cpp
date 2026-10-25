@@ -7599,6 +7599,8 @@ struct Plater::priv
     void on_slicing_update(SlicingStatusEvent&);
     void on_slicing_completed(wxCommandEvent&);
     void on_process_completed(SlicingProcessCompletedEvent&);
+    // SPLITPRINT: tells the user whether one head or two prints the split part faster.
+    void show_split_print_speed_tip();
     void on_export_began(wxCommandEvent&);
     void on_export_finished(wxCommandEvent&);
     void on_slicing_began();
@@ -13337,6 +13339,28 @@ bool Plater::priv::warnings_dialog()
 }
 
 //BBS: add project slice logic
+// SPLITPRINT
+void Plater::priv::show_split_print_speed_tip()
+{
+    notification_manager->close_notification_of_type(NotificationType::SplitPrintSpeedTip);
+    const GCodeProcessorResult *result = background_process.get_current_gcode_result();
+    if (result == nullptr || !result->split_print || result->split_one_head_time <= 0.f)
+        return;
+
+    const float two_heads = result->print_statistics.modes[size_t(PrintEstimatedStatistics::ETimeMode::Normal)].time;
+    const float one_head  = result->split_one_head_time;
+    const std::string times = format(_u8L("Two heads: %1%. One head: %2%."), get_time_dhms(two_heads), get_time_dhms(one_head));
+    std::string text;
+    if (two_heads < one_head) {
+        const int saved = int(std::lround(100. * (1. - double(two_heads) / double(one_head))));
+        text = format(_u8L("Two heads, one object: printing with both heads is faster, about %1%%% less time."), saved);
+    } else
+        text = _u8L("Two heads, one object: one head is faster for this part. Consider turning off \"Two heads, one object\".");
+    notification_manager->push_notification(NotificationType::SplitPrintSpeedTip,
+                                            NotificationManager::NotificationLevel::ImportantNotificationLevel,
+                                            text + "\n" + times);
+}
+
 void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 {
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": enter, m_ignore_event %1%, status %2%")%m_ignore_event %evt.status();
@@ -13507,6 +13531,10 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             *plate_bbox_data = generate_first_layer_bbox();
         }
     }
+
+    // SPLITPRINT
+    if (evt.success() && !has_error)
+        show_split_print_speed_tip();
 
     exporting_status = ExportingStatus::NOT_EXPORTING;
 

@@ -59,7 +59,13 @@ Polygon t0_staircase(const SplitParams &p, int layer_id, const BoundingBox &bbox
 
 int row_owner(const SplitParams &params, int layer_id, int64_t row)
 {
-    return int(mod2(row + (params.layer_shift ? layer_id : 0)));
+    const int64_t block = floor_div(layer_id, std::max(1, params.layers_per_block));
+    switch (params.interlock) {
+    case Interlock::InPlane: return int(mod2(row));
+    case Interlock::Layers: return int(mod2(block));
+    case Interlock::Both: break;
+    }
+    return int(mod2(row + block));
 }
 
 coord_t finger_length(const SplitParams &params, int layer_id, int64_t row)
@@ -69,8 +75,8 @@ coord_t finger_length(const SplitParams &params, int layer_id, int64_t row)
     double        t  = 1.;
     switch (params.pattern) {
     case InterfacePattern::Alternating:
-        // Consecutive fingers of the same tool are two rows apart.
-        t = mod2(floor_div(row, 2)) == 0 ? 1. : 0.;
+        // Consecutive fingers of the same tool are two rows apart, or one when a layer has one owner.
+        t = mod2(params.interlock == Interlock::Layers ? row : floor_div(row, 2)) == 0 ? 1. : 0.;
         break;
     case InterfacePattern::Random: {
         const uint64_t h = mix(mix(mix(params.seed) ^ uint64_t(uint32_t(layer_id))) ^ uint64_t(row));

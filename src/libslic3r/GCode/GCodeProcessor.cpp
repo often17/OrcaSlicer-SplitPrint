@@ -2710,6 +2710,8 @@ void GCodeProcessorResult::reset() {
     machine_frame_transform_active = false;
     belt_tilt_angle = 0.f;
     belt_z_origin   = 0.f;
+    split_print         = false;
+    split_one_head_time = 0.f;
     settings_ids.reset();
     filaments_count = 0;
     backtrace_enabled = false;

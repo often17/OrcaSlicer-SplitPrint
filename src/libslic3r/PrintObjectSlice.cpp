@@ -42,6 +42,7 @@
 #include "Surface.hpp"
 #include "Utils.hpp"
 #include "libslic3r/Feature/Interlocking/InterlockingGenerator.hpp"
+#include "libslic3r/SplitPrint/Phases.hpp"
 #include "libslic3r/SplitPrint/Splitter.hpp"
 #include "Config.hpp"
 #include "SurfaceCollection.hpp"
@@ -1087,22 +1088,11 @@ static std::vector<std::vector<ExPolygons>> split_print_segmentation(const Print
     if (!bbox.defined)
         return out;
 
-    SplitPrint::SplitParams p;
-    p.axis       = cfg.split_axis.value == SplitPrintAxis::Y ? SplitPrint::SplitAxis::Y : SplitPrint::SplitAxis::X;
-    p.split_pos  = (p.axis == SplitPrint::SplitAxis::X ? bbox.center().x() : bbox.center().y()) + coord_t(scale_(cfg.split_position.value));
-    p.nogo_width = coord_t(scale_(cfg.split_nogo_width.value));
-    p.length_min = coord_t(scale_(cfg.split_interface_length_min.value));
-    p.length_max = coord_t(scale_(cfg.split_interface_length_max.value));
-    switch (cfg.split_interface_pattern.value) {
-    case SplitInterfacePattern::Random: p.pattern = SplitPrint::InterfacePattern::Random; break;
-    case SplitInterfacePattern::Sine: p.pattern = SplitPrint::InterfacePattern::Sine; break;
-    default: p.pattern = SplitPrint::InterfacePattern::Alternating; break;
-    }
-    p.period      = cfg.split_interface_period.value;
-    p.layer_shift = cfg.split_interface_layer_shift.value;
-    // One finger per perimeter line. The first layer may use a wider line, so take the second.
+    SplitPrint::SplitParams p = SplitPrint::make_split_params(cfg, bbox);
+    // Fingers are a whole number of perimeter lines wide. The first layer may use a wider line, so take the second.
     const Layer &ref_layer = *print_object.get_layer(int(std::min<size_t>(1, num_layers - 1)));
     p.row_pitch            = ref_layer.regions().empty() ? 0 : ref_layer.regions().front()->flow(frPerimeter).scaled_spacing();
+    p.row_pitch *= std::max(1, cfg.split_interface_finger_width.value);
 
     tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&](const tbb::blocked_range<size_t> &range) {
         for (size_t layer_id = range.begin(); layer_id < range.end(); ++layer_id) {

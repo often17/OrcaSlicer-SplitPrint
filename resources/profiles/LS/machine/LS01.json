@@ -1,0 +1,12 @@
+{
+	"type": "machine_model",
+	"name": "LS01",
+	"model_id": "LS01",
+	"nozzle_diameter": "0.4",
+	"machine_tech": "FFF",
+	"family": "LS",
+	"bed_model": "",
+	"bed_texture": "",
+	"hotend_model": "",
+	"default_materials": "Generic PLA @System;Generic PETG @System;Generic ABS @System"
+}

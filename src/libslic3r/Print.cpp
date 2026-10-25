@@ -58,6 +58,9 @@
 #include "IMEXHelpers.hpp"
 #include "IMEXZones.hpp"
 #include "Print.hpp"
+#include "SplitPrint/Export.hpp"    // SPLITPRINT
+#include "SplitPrint/Scheduler.hpp" // SPLITPRINT
+#include <array>
 #include "BoundingBox.hpp"
 #include "Brim.hpp"
 #include "ClipperUtils.hpp"
@@ -93,6 +96,7 @@
 #include <unordered_set>
 #include <sstream>
 #include <boost/filesystem/path.hpp>
+#include <boost/system/error_code.hpp>
 #include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/regex.hpp>
@@ -1988,6 +1992,22 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
 
     if (extruders.empty())
         return { L("No extrusions under current settings.") };
+
+    // SPLITPRINT: two heads on one shared Z, each fed its own stream.
+    if (SplitPrint::print_is_split(*this)) {
+        if (m_config.print_sequence == PrintSequence::ByObject)
+            return { L("Two heads, one object needs the print sequence \"By layer\".") };
+        if (m_config.enable_prime_tower)
+            return { L("Two heads, one object does not work with a prime tower.") };
+        if (m_config.spiral_mode)
+            return { L("Two heads, one object does not work with spiral vase mode.") };
+        if (m_config.belt_printer)
+            return { L("Two heads, one object does not work on a belt printer.") };
+        for (double z_hop : m_config.z_hop.values)
+            if (z_hop > 0.)
+                return { L("Two heads, one object needs Z hop set to 0 on both extruders. "
+                           "The heads share Z, so a lift by one head would lift the other in the middle of a line.") };
+    }
 
     // A flow ratio of 0 would extrude nothing, and a nil one would write NaN extrusion lengths.
     {
@@ -4006,8 +4026,33 @@ std::string Print::export_gcode(const std::string& path_template, GCodeProcessor
     // still emits in the frame the current config asks for.
     this->update_imex_slice_offset();
     const Vec2d imex_off = this->get_imex_slice_offset();
+    // SPLITPRINT: each head's own stream first, so the combined export below, which the
+    // preview and the print statistics come from, runs last.
+    const bool split = SplitPrint::print_is_split(*this);
+    std::array<GCodeProcessorResult, 2> head_results;
+    // GCode::do_export() skips a file that exists once the export step is done, and the first
+    // head's export marks it done. So unless all three files are current, remove the old ones:
+    // otherwise the second head and the combined file would keep what an earlier slice wrote.
+    bool split_up_to_date = split && this->is_step_done(psGCodeExport) && boost::filesystem::exists(path);
+    for (int head = 0; split && head < 2; ++head)
+        split_up_to_date = split_up_to_date && boost::filesystem::exists(SplitPrint::head_gcode_path(path, head));
+    if (split && !split_up_to_date) {
+        boost::system::error_code ec;
+        boost::filesystem::remove(path, ec);
+        for (int head = 0; head < 2; ++head)
+            boost::filesystem::remove(SplitPrint::head_gcode_path(path, head), ec);
+    }
+    if (split && !split_up_to_date)
+        for (int head = 0; head < 2; ++head) {
+            GCode head_gcode;
+            head_gcode.set_gcode_offset_with_imex_shift(origin(0), origin(1), imex_off.x(), imex_off.y());
+            head_gcode.set_split_head(head);
+            head_gcode.do_export(this, SplitPrint::head_gcode_path(path, head).c_str(), &head_results[head], nullptr);
+        }
     gcode->set_gcode_offset_with_imex_shift(origin(0), origin(1), imex_off.x(), imex_off.y());
     gcode->do_export(this, path.c_str(), result, thumbnail_cb);
+    if (split && !split_up_to_date)
+        SplitPrint::finish_head_streams(*this, path, {&head_results[0], &head_results[1]}, result);
     gcode->export_layer_filaments(result);
     //BBS
     if (result != nullptr) {
