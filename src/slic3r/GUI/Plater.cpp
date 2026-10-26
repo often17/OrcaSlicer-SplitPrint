@@ -13356,6 +13356,17 @@ void Plater::priv::show_split_print_speed_tip()
         text = format(_u8L("Two heads, one object: printing with both heads is faster, about %1%%% less time."), saved);
     } else
         text = _u8L("Two heads, one object: one head is faster for this part. Consider turning off \"Two heads, one object\".");
+    if (result->split_stopped_layers > 0)
+        text += "\n" + format(into_u8(_L_PLURAL("%1% layer needs both heads to stop in the middle of it to stay apart.",
+                                                 "%1% layers need both heads to stop in the middle of them to stay apart.",
+                                                 result->split_stopped_layers)),
+                              result->split_stopped_layers);
+    if (result->split_preview_layer_step > 1)
+        // TRN %1% is a number of layers, 2 or more. The preview of a very large print leaves layers out to fit in memory.
+        text += "\n" + format(into_u8(_L_PLURAL("To fit in memory, the preview shows one layer in %1%. The G-code files have every layer.",
+                                                 "To fit in memory, the preview shows one layer in %1%. The G-code files have every layer.",
+                                                 result->split_preview_layer_step)),
+                              result->split_preview_layer_step);
     notification_manager->push_notification(NotificationType::SplitPrintSpeedTip,
                                             NotificationManager::NotificationLevel::ImportantNotificationLevel,
                                             text + "\n" + times);

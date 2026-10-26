@@ -149,6 +149,25 @@ class RunDualTest(unittest.TestCase):
         p1 = self.write("p.T1.gcode", head_file(100, [90]))
         self.assertEqual(run_dual.main([p0, p1, "--dry-run"]), 0)
 
+    def timed_file(self, start_x, x, expected):
+        """One timed layer far from the other head, expected to take `expected` seconds."""
+        out = f"G28\nG90\nM83\nG1 X{start_x}\n; SPLITPRINT_SYNC L0\n; SPLITPRINT_TIMED {expected}\nG1 X{x} E1 F600\n"
+        return out + "; SPLITPRINT_SYNC end\nG28\n" + CONFIG
+
+    def test_heads_keeping_to_the_timing_go_on(self):
+        code = self.run_job(self.timed_file(0, 5, 0.05), self.timed_file(100, 95, 0.05),
+                            t0=self.fake("T0", delay=0.05), t1=self.fake("T1", delay=0.05))
+        self.assertEqual(code, 0)
+
+    def test_a_head_falling_behind_its_timing_stops_the_print_at_the_layer_change(self):
+        # T1 takes a second longer than expected: far beyond half the 0.5 s + 10 % margin.
+        t0, t1 = self.fake("T0", delay=0.05), self.fake("T1", delay=1.05)
+        code = self.run_job(self.timed_file(0, 5, 0.05), self.timed_file(100, 95, 0.05), t0=t0, t1=t1)
+        self.assertEqual(code, 3)
+        # Stopped at the barrier: the end G-code never went out, and no emergency stop was needed.
+        self.assertEqual(len(t0.calls), 2)
+        self.assertEqual(t0.estops + t1.estops, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

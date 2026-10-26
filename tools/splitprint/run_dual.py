@@ -14,6 +14,11 @@ its own G-code (part.T0.gcode, part.T1.gcode) one sync interval at a time:
      the commands have run, and M400 waits for the moves to finish, so when both
      calls have returned both heads are at the barrier. Only then does the next
      interval go out.
+     A timed interval (a whole layer with no stop in it) is safe only while the two
+     heads keep to the slicer's timing. Its ``; SPLITPRINT_TIMED <s>`` line gives each
+     head's expected time; if one head finishes more than half the timing margin
+     ahead of the other, relative to those times, the print stops at that layer
+     change, before the next layer.
   5. After the ``end`` sync, runs each head's end G-code (both at once). The end
      G-code must only move a head towards its own end of the bed.
 
@@ -30,6 +35,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -37,6 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check  # noqa: E402
 
 SYNC_RE = re.compile(r";\s*SPLITPRINT_SYNC\s+(\S+)")
+TIMED_RE = re.compile(r";\s*SPLITPRINT_TIMED\s+([-+]?(?:\d+\.?\d*|\.\d+))")
+MARGIN_ABS = 0.5  # s, the slicer's fixed timing slack
 CONFIG_RE = re.compile(r";\s*(\w+)\s*=\s*(.*)$")
 
 
@@ -47,6 +55,7 @@ class Job:
         self.path = path
         self.start = []      # lines before the first sync
         self.intervals = []  # (sync_id, lines) up to the end sync
+        self.expected = {}   # interval index -> seconds, for timed intervals
         self.end = []        # lines after the end sync
         self.config = {}
         cur = self.start
@@ -60,6 +69,10 @@ class Job:
                     else:
                         self.intervals.append((m.group(1), []))
                         cur = self.intervals[-1][1]
+                    continue
+                t = TIMED_RE.match(line.strip())
+                if t and self.intervals and cur is self.intervals[-1][1]:
+                    self.expected[len(self.intervals) - 1] = float(t.group(1))
                     continue
                 c = CONFIG_RE.match(line)
                 if c:
@@ -119,14 +132,42 @@ def emergency_stop_all(heads):
             print(f"{h.name}: EMERGENCY STOP FAILED: {e}", file=sys.stderr)
 
 
+def timed_run(head, lines):
+    t = time.monotonic()
+    head.run(lines)
+    return time.monotonic() - t
+
+
 def run_both(pool, heads, work):
-    """Runs work[i] on heads[i] at once; raises the first error as soon as it happens."""
-    futures = [pool.submit(h.run, w) for h, w in zip(heads, work)]
+    """Runs work[i] on heads[i] at once; raises the first error as soon as it happens.
+    Returns how long each head took, in seconds."""
+    futures = [pool.submit(timed_run, h, w) for h, w in zip(heads, work)]
     done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
     for f in done:
         f.result()  # raises the error, if any
-    for f in futures:
-        f.result()
+    return [f.result() for f in futures]
+
+
+class DriftError(Exception):
+    """The heads did not keep to the slicer's timing; both are stopped at a barrier."""
+
+
+def check_drift(sync_id, expected, took, margin_rel):
+    """Raises DriftError when one head ran further ahead of the other than half the margin."""
+    ahead = (took[1] - expected[1]) - (took[0] - expected[0])  # > 0: T0 ran ahead of T1
+    allowed = 0.5 * (MARGIN_ABS + margin_rel * max(expected))
+    if abs(ahead) > allowed:
+        raise DriftError(
+            f"layer after sync {sync_id}: T0 took {took[0]:.2f} s (expected {expected[0]:.2f}), "
+            f"T1 took {took[1]:.2f} s (expected {expected[1]:.2f}): one head ran {abs(ahead):.2f} s ahead of the "
+            f"other, more than the {allowed:.2f} s allowed. The slicer's move times do not match this printer; "
+            f"check the velocity and acceleration limits in printer.cfg against the printer profile, or raise "
+            f"the timing margin.")
+
+
+def timing_margin(job):
+    """The relative timing margin the file was sliced with."""
+    return float(job.config.get("split_timing_margin", "10").rstrip("%")) / 100.0
 
 
 def preflight(jobs, band):
@@ -135,17 +176,20 @@ def preflight(jobs, band):
     ids = [[i for i, _ in j.intervals] for j in jobs]
     if ids[0] != ids[1]:
         problems.append("the two files have different sync markers; were they sliced together?")
+    if set(jobs[0].expected) != set(jobs[1].expected):
+        problems.append("the two files time different layers; were they sliced together?")
     cfg = jobs[0].config
     try:
         gap = float(cfg["split_gantry_min_gap"])
         width = float(cfg.get("split_nogo_width", "0"))
         axis = cfg.get("split_axis", "x").lower()
+        margin = timing_margin(jobs[0])
     except (KeyError, ValueError):
         return problems + [f"{jobs[0].path}: no split settings in its config block"]
     if band is None and width > gap:
         problems.append(f"the no-go zone ({width} mm) is wider than the head gap ({gap} mm): pass --band LO HI")
     streams = [check.parse(j.path, axis, band) for j in jobs]
-    problems += check.check(streams[0], streams[1], gap)
+    problems += check.check(streams[0], streams[1], gap, MARGIN_ABS, margin)
     return problems
 
 
@@ -171,7 +215,8 @@ def main(argv=None):
         print("Refusing to start: the collision check failed.", file=sys.stderr)
         return 1
     count = len(jobs[0].intervals)
-    print(f"Check passed: {count} sync intervals.")
+    margin = timing_margin(jobs[0])
+    print(f"Check passed: {count} sync intervals, {len(jobs[0].expected)} layers without stops.")
     if args.dry_run:
         for j, name in zip(jobs, ("T0", "T1")):
             lines = sum(len(l) for _, l in j.intervals)
@@ -201,9 +246,15 @@ def main(argv=None):
             sync_id = jobs[0].intervals[k][0]
             if re.fullmatch(r"L\d+", sync_id):
                 print(f"Layer {sync_id[1:]} ({k + 1}/{count} intervals)", flush=True)
-            run_both(pool, heads, [jobs[0].intervals[k][1], jobs[1].intervals[k][1]])
+            took = run_both(pool, heads, [jobs[0].intervals[k][1], jobs[1].intervals[k][1]])
+            if k in jobs[0].expected:
+                check_drift(sync_id, [jobs[0].expected[k], jobs[1].expected[k]], took, margin)
         print("End G-code")
         run_both(pool, heads, [jobs[0].end, jobs[1].end])
+    except DriftError as e:
+        # Both heads are idle at the barrier: nothing needs an emergency stop.
+        print(f"Stopped: {e}\nBoth heads are idle; Klipper's idle timeout turns the heaters off.", file=sys.stderr)
+        return 3
     except KeyboardInterrupt:
         print("Interrupted: stopping both printers", file=sys.stderr)
         emergency_stop_all(heads)

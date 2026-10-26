@@ -861,12 +861,15 @@ public:
         : m_out(out), m_out_path(out_path), m_lines_ends(lines_ends), m_error_message(error_message)
     {}
     ~GCodeFileWriter() { assert(m_buffer.empty() || std::uncaught_exceptions() > 0); }
+    // SPLITPRINT: lines_ends stays empty.
+    void stop_recording_lines() { m_record_lines = false; }
 
     void append(std::string_view text)
     {
         const size_t text_pos = m_file_pos + m_buffer.size();
-        for (size_t i = text.find('\n'); i != std::string_view::npos; i = text.find('\n', i + 1))
-            m_lines_ends.emplace_back(text_pos + i + 1);
+        if (m_record_lines)
+            for (size_t i = text.find('\n'); i != std::string_view::npos; i = text.find('\n', i + 1))
+                m_lines_ends.emplace_back(text_pos + i + 1);
         m_buffer += text;
         if (m_buffer.size() >= GCodeProcessor::Output_Block_Size)
             flush();
@@ -890,6 +893,7 @@ private:
     FilePtr&             m_out;
     const std::string&   m_out_path;
     std::vector<size_t>& m_lines_ends;
+    bool                 m_record_lines{true}; // SPLITPRINT
     const char*          m_error_message;
     std::string          m_buffer;
     size_t               m_file_pos{0};
@@ -964,6 +968,7 @@ private:
     std::vector<std::pair<size_t, size_t>> m_gcode_lines_map;
 
     size_t m_times_cache_id{0};
+    bool   m_keep_lines_map{true}; // SPLITPRINT
 
 public:
     ExportLines(EWriteType type, const std::array<GCodeProcessor::TimeMachine, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)>& machines, GCodeFileWriter& writer)
@@ -981,7 +986,8 @@ public:
         unsigned int update(const std::string& line, size_t lines_counter, size_t g1_lines_counter)
     {
         unsigned int ret = 0;
-        m_gcode_lines_map.push_back({lines_counter, 0});
+        if (m_keep_lines_map) // SPLITPRINT
+            m_gcode_lines_map.push_back({lines_counter, 0});
 
         if (GCodeReader::GCodeLine::cmd_is(line, "G0") || GCodeReader::GCodeLine::cmd_is(line, "G1") ||
             GCodeReader::GCodeLine::cmd_is(line, "G2") || GCodeReader::GCodeLine::cmd_is(line, "G3") ||
@@ -1036,7 +1042,7 @@ public:
         } else
             m_writer.append(line);
         ++m_added_lines_counter;
-        if (!ignore_from_move) {
+        if (!ignore_from_move && m_keep_lines_map) { // SPLITPRINT
             assert(!m_gcode_lines_map.empty());
             m_gcode_lines_map.back().second = m_added_lines_counter;
         }
@@ -1091,6 +1097,7 @@ public:
 #endif // NDEBUG
                 m_size += out_line.length();
                 // synchronize gcode lines map
+                if (m_keep_lines_map) // SPLITPRINT
                 for (auto map_it = m_gcode_lines_map.rbegin(); map_it != m_gcode_lines_map.rbegin() + rev_it_dist - 1; ++map_it) {
                     ++map_it->second;
                 }
@@ -1162,6 +1169,10 @@ public:
     size_t get_size() const { return m_size; }
 
     void reserve(size_t lines_count) { m_gcode_lines_map.reserve(lines_count); }
+    // SPLITPRINT: no line keeps a map entry; moves keep their first-pass line ids.
+    void drop_lines_map() { m_keep_lines_map = false; }
+    // SPLITPRINT: original -> final line ids, for the moves a move sink took.
+    const std::vector<std::pair<size_t, size_t>>& lines_map() const { return m_gcode_lines_map; }
 };
 
 void GCodeProcessor::run_post_process()
@@ -1262,6 +1273,14 @@ void GCodeProcessor::run_post_process()
     GCodeFileWriter writer(out, out_path, m_result.lines_ends, "GCode processor post process export failed.\nIs the disk full?");
     ExportLines export_line(m_result.backtrace_enabled ? ExportLines::EWriteType::ByTime : ExportLines::EWriteType::BySize,
         m_time_processor.machines, writer);
+    // SPLITPRINT: the split export shows no G-code window, and a move sink that drops the moves
+    // needs no line map: the moves left behind are dropped as well.
+    const bool sink_lines = m_move_sink.take && !m_enable_pre_heating;
+    if (sink_lines)
+        writer.stop_recording_lines();
+    if (sink_lines && !m_move_sink.renumbered)
+        export_line.drop_lines_map();
+    else
     // The line map holds an entry for each line of the file, and the first pass counted them
     export_line.reserve(m_line_id);
 
@@ -1914,6 +1933,8 @@ void GCodeProcessor::run_post_process()
 
     const std::string result_filename = m_result.filename;
     export_line.synchronize_moves(m_result);
+    if (m_move_sink.renumbered) // SPLITPRINT
+        m_move_sink.renumbered(export_line.lines_map());
 
     // Rebase the first-pass usage/skippable blocks + the machine start/end gcode line ids from the
     // pre-M73 input-line-id space into the final output-line-id space, so they share one coordinate
@@ -2712,6 +2733,8 @@ void GCodeProcessorResult::reset() {
     belt_z_origin   = 0.f;
     split_print         = false;
     split_one_head_time = 0.f;
+    split_stopped_layers = 0;
+    split_preview_layer_step = 1;
     settings_ids.reset();
     filaments_count = 0;
     backtrace_enabled = false;
@@ -2927,6 +2950,88 @@ void GCodeProcessor::process_M6211(const GCodeReader::GCodeLine& line)
         process_elegoo_M6211(line);
 }
 
+// SPLITPRINT: check_multi_extruder_gcode_valid()'s position lambda, shared with take_finished_moves().
+// Belt-printer post-gcode shear/scale/post_remap is applied as the final
+// step of BeltKinematics::to_machine, so MoveVertex.position is
+// in the printer's machine frame.  Undo it here so the XY area check
+// operates in the build-volume frame that printable_area is defined in.
+// For non-belt printers apply_inverse is identity.
+Vec3d GCodeProcessor::check_position(const GCodeProcessorResult::MoveVertex &move) const
+{
+    Vec3d pos = move.position.cast<double>();
+    if (!m_machine_frame_transform.is_active())
+        return pos;
+    Vec3d extruder_off = Vec3d::Zero();
+    if (size_t(move.extruder_id) < m_extruder_offsets.size())
+        extruder_off = m_extruder_offsets[move.extruder_id].cast<double>();
+    // Strip plate + extruder offsets to recover the raw machine-frame
+    // coordinate that was emitted into the G-code (see store_move_vertex).
+    Vec3d machine(pos.x() - m_x_offset - extruder_off.x(),
+                  pos.y() - m_y_offset - extruder_off.y(),
+                  pos.z() - extruder_off.z() + m_z_offset);
+    Vec3d build = m_machine_frame_transform.apply_inverse(machine);
+    // Re-apply plate offset so the result matches plate_printable_poly,
+    // which is translated by plate_offset in check_multi_extruder_gcode_valid().
+    return Vec3d(build.x() + m_x_offset, build.y() + m_y_offset, build.z());
+}
+
+// SPLITPRINT: hands the moves no later step changes to the move sink.
+void GCodeProcessor::take_finished_moves()
+{
+    // Taking moves costs a copy of the few left behind, so take them in large batches.
+    constexpr size_t batch = size_t(1) << 18;
+    std::vector<GCodeProcessorResult::MoveVertex> &moves = m_result.moves;
+    if (m_sink_drops_lines)
+        // Only post-processing reads the times per line.
+        for (TimeMachine &machine : m_time_processor.machines)
+            machine.g1_times_cache.clear();
+    if (!m_move_sink.take || moves.size() < 2 * batch)
+        return;
+    // The time pass still writes to the moves of queued blocks and to the move before each, the
+    // Z corrector may move the one it holds, and new moves are compared with the last one.
+    size_t keep_from = moves.size() - 1;
+    for (const TimeMachine &machine : m_time_processor.machines)
+        for (const TimeBlock &block : machine.blocks)
+            keep_from = std::min<size_t>(keep_from, block.move_id > 0 ? block.move_id - 1 : 0);
+    if (const std::optional<size_t> held = m_options_z_corrector.move_id())
+        keep_from = std::min(keep_from, *held);
+    if (keep_from < batch)
+        return;
+
+    const bool machine_frame_active = m_machine_frame_transform.is_active();
+    for (size_t i = 0; i < keep_from; ++i) {
+        GCodeProcessorResult::MoveVertex &move = moves[i];
+        // As finalize() does to the moves it keeps.
+        if (move.type == EMoveType::Wipe) {
+            move.width  = Wipe_Width;
+            move.height = Wipe_Height;
+        }
+        // As check_multi_extruder_gcode_valid() reads them.
+        if (move.type != EMoveType::Extrude)
+            continue;
+        const Vec3d   cp           = check_position(move);
+        const float   z_for_height = machine_frame_active ? float(cp.z()) : move.print_z;
+        TakenPathPos &taken        = m_taken_path_pos[move.object_label_id][int(move.extruder_id)];
+        if (move.extrusion_role == ExtrusionRole::erCustom) {
+            taken.max_print_z_custom = std::max(taken.max_print_z_custom, z_for_height);
+            continue;
+        }
+        const Point p(scale_(cp.x()), scale_(cp.y()));
+        taken.min         = taken.has_pos ? Point(taken.min.cwiseMin(p)) : p;
+        taken.max         = taken.has_pos ? Point(taken.max.cwiseMax(p)) : p;
+        taken.has_pos     = true;
+        taken.max_print_z = std::max(taken.max_print_z, z_for_height);
+    }
+
+    m_move_sink.take(moves.data(), moves.data() + keep_from);
+    moves.erase(moves.begin(), moves.begin() + keep_from);
+    m_moves_taken += keep_from;
+    for (TimeMachine &machine : m_time_processor.machines)
+        for (TimeBlock &block : machine.blocks)
+            block.move_id -= static_cast<unsigned int>(keep_from);
+    m_options_z_corrector.on_moves_taken(keep_from);
+}
+
 bool GCodeProcessor::check_multi_extruder_gcode_valid(const int                         extruder_size,
                                                       const Pointfs                     plate_printable_area,
                                                       const double                      plate_printable_height,
@@ -2956,23 +3061,7 @@ bool GCodeProcessor::check_multi_extruder_gcode_valid(const int                 
     // (is_active() == false) apply_inverse is identity and behaviour is
     // unchanged from before.
     const bool machine_frame_active = m_machine_frame_transform.is_active();
-    auto compare_pos = [&](const GCodeProcessorResult::MoveVertex &move) -> Vec3d {
-        Vec3d pos = move.position.cast<double>();
-        if (!machine_frame_active)
-            return pos;
-        Vec3d extruder_off = Vec3d::Zero();
-        if (size_t(move.extruder_id) < m_extruder_offsets.size())
-            extruder_off = m_extruder_offsets[move.extruder_id].cast<double>();
-        // Strip plate + extruder offsets to recover the raw machine-frame
-        // coordinate that was emitted into the G-code (see store_move_vertex).
-        Vec3d machine(pos.x() - m_x_offset - extruder_off.x(),
-                      pos.y() - m_y_offset - extruder_off.y(),
-                      pos.z() - extruder_off.z() + m_z_offset);
-        Vec3d build = m_machine_frame_transform.apply_inverse(machine);
-        // Re-apply plate offset so the result matches plate_printable_poly,
-        // which is translated by plate_offset below.
-        return Vec3d(build.x() + m_x_offset, build.y() + m_y_offset, build.z());
-    };
+    auto compare_pos = [this](const GCodeProcessorResult::MoveVertex &move) -> Vec3d { return check_position(move); };
 
     struct GCodePosInfo
     {
@@ -2982,6 +3071,17 @@ bool GCodeProcessor::check_multi_extruder_gcode_valid(const int                 
         float  max_print_z_custom;
     };
     std::map<int, std::map<int, GCodePosInfo>> gcode_path_pos; // object_id, filament_id, pos
+    // SPLITPRINT: the moves a move sink took count through the corners of the box they span.
+    for (const auto &[object_id, by_filament] : m_taken_path_pos)
+        for (const auto &[filament_id, taken] : by_filament) {
+            GCodePosInfo &info = gcode_path_pos[object_id][filament_id];
+            if (taken.has_pos) {
+                info.pos.emplace_back(taken.min);
+                info.pos.emplace_back(taken.max);
+            }
+            info.max_print_z        = std::max(info.max_print_z, taken.max_print_z);
+            info.max_print_z_custom = std::max(info.max_print_z_custom, taken.max_print_z_custom);
+        }
     for (const GCodeProcessorResult::MoveVertex &move : m_result.moves) {
         // sometimes, the start line extrude was outside the edge of plate a little, this is allowed, so do not include into the gcode_path_pos
         if (move.type == EMoveType::Extrude /* && move.extrusion_role != ExtrusionRole::erFlush || move.type == EMoveType::Travel*/) {
@@ -3803,6 +3903,10 @@ void GCodeProcessor::reset()
     m_last_default_color_id = 0;
 
     m_options_z_corrector.reset();
+    // SPLITPRINT: the sink itself stays, it is set before processing starts.
+    m_moves_taken = 0;
+    m_sink_drops_lines = false;
+    m_taken_path_pos.clear();
 
     m_detect_layer_based_on_tag = false;
 
@@ -3898,7 +4002,7 @@ void GCodeProcessor::process_file(const std::string& filename, std::function<voi
     m_result.id = ++s_result_id;
     initialize_result_moves();
     size_t parse_line_callback_cntr = 10000;
-    m_parser.parse_file(filename, [this, cancel_callback, &parse_line_callback_cntr](GCodeReader& reader, const GCodeReader::GCodeLine& line) {
+    auto process_line = [this, cancel_callback, &parse_line_callback_cntr](GCodeReader& reader, const GCodeReader::GCodeLine& line) {
         if (-- parse_line_callback_cntr == 0) {
             // Don't call the cancel_callback() too often, do it every at every 10000'th line.
             parse_line_callback_cntr = 10000;
@@ -3906,7 +4010,14 @@ void GCodeProcessor::process_file(const std::string& filename, std::function<voi
                 cancel_callback();
         }
         this->process_gcode_line(line, true);
-    }, m_result.lines_ends);
+    };
+    // SPLITPRINT: a move sink's caller reads the file only for its moves, so the per-line
+    // tables of the G-code window and of post-processing are not kept.
+    m_sink_drops_lines = bool(m_move_sink.take);
+    if (m_sink_drops_lines)
+        m_parser.parse_file(filename, process_line);
+    else
+        m_parser.parse_file(filename, process_line, m_result.lines_ends);
 
     // Don't post-process the G-code to update time stamps.
     this->finalize(false);
@@ -5307,7 +5418,7 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
                 *exclusion_motion_type,
                 static_cast<unsigned char>(type),
                 m_line_id,
-                m_result.moves.size());
+                m_result.moves.size() + m_moves_taken); // SPLITPRINT: count the moves a sink took
         }
     }
 
@@ -8130,6 +8241,7 @@ void GCodeProcessor::calculate_time(GCodeProcessorResult& result, size_t keep_la
         }
     }
     m_options_z_corrector.on_moves_inserted(m_actual_speed_id_map);
+    take_finished_moves(); // SPLITPRINT
 }
 
 void GCodeProcessor::simulate_st_synchronize(float additional_time, EMoveType target_move_type)

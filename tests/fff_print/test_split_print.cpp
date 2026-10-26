@@ -16,12 +16,14 @@
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/GCode.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/GCode/ToolOrdering.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/SplitPrint/Export.hpp"
 #include "libslic3r/SplitPrint/Scheduler.hpp"
 #include "libslic3r/Surface.hpp"
 
@@ -55,6 +57,8 @@ DynamicPrintConfig split_config(bool enabled)
         {"split_gantry_min_gap", "60"},
         {"skirt_loops", "0"},
         {"brim_type", "no_brim"},
+        // The heads run Klipper; timed layers rely on its motion planner's times.
+        {"gcode_flavor", "klipper"},
     });
     return config;
 }
@@ -158,9 +162,11 @@ TEST_CASE("Printed lines fill the no-go zone so the halves join", "[SplitPrint]"
 namespace {
 
 // Slices `mesh` centred on a 400 x 400 bed and exports it, keeping the two head streams.
-void export_split(const TriangleMesh &mesh, std::array<std::vector<std::string>, 2> &heads, GCodeProcessorResult &result)
+void export_split(const TriangleMesh &mesh, std::array<std::vector<std::string>, 2> &heads, GCodeProcessorResult &result,
+                  const DynamicPrintConfig &extra = {})
 {
     DynamicPrintConfig config = split_config(true);
+    config.apply(extra);
     Print print;
     Model model;
     init_print({mesh}, print, model, config);
@@ -198,9 +204,13 @@ bool is_tool_change(const std::string &line) { return line.size() >= 2 && line[0
 
 TEST_CASE("Each head gets its own G-code that keeps the heads apart", "[SplitPrint]")
 {
+    // With stops in the middle of layers, safety does not depend on timing, so the files can be
+    // checked here without move times.
+    DynamicPrintConfig stops;
+    stops.set_deserialize_strict({{"split_timed_layers", "0"}});
     std::array<std::vector<std::string>, 2> heads;
     GCodeProcessorResult                    result;
-    export_split(cube(40), heads, result);
+    export_split(cube(40), heads, result, stops);
 
     const std::vector<std::string> errors = SplitPrint::check_streams(heads, bed_params());
     INFO((errors.empty() ? std::string() : errors.front()));
@@ -422,4 +432,96 @@ TEST_CASE("Each head prints the brim and skirt on its own side", "[SplitPrint]")
         CHECK(heads[0].at(feature).x_max <= 200.01);
         CHECK(heads[1].at(feature).x_min >= 199.99);
     }
+}
+
+namespace {
+
+bool is_mid_layer_sync(const std::string &l) { return l.rfind("; SPLITPRINT_SYNC L", 0) == 0 && l.find('.', 19) != std::string::npos; }
+size_t count_starting(const std::vector<std::string> &lines, const char *prefix)
+{
+    return size_t(std::count_if(lines.begin(), lines.end(), [prefix](const std::string &l) { return l.rfind(prefix, 0) == 0; }));
+}
+
+} // namespace
+
+TEST_CASE("Each layer prints without a stop in the middle", "[SplitPrint]")
+{
+    // A 40 mm cube is narrower than the 60 mm gap: the heads print each layer one after the
+    // other. A 300 mm bar is wide enough for both to work at once. Both are 1 mm high: 5 layers.
+    const bool wide = GENERATE(false, true);
+    std::array<std::vector<std::string>, 2> heads;
+    GCodeProcessorResult                    result;
+    export_split(wide ? make_cube(300., 30., 1.) : make_cube(40., 40., 1.), heads, result);
+
+    INFO((wide ? "300 mm bar" : "40 mm cube"));
+    CHECK(result.split_stopped_layers == 0);
+    for (int h = 0; h < 2; ++h) {
+        INFO("head " << h);
+        CHECK(std::none_of(heads[h].begin(), heads[h].end(), is_mid_layer_sync));
+        CHECK(count_starting(heads[h], "; SPLITPRINT_TIMED ") == 5);
+    }
+}
+
+TEST_CASE("Two heads save time on a long part without stopping mid-layer", "[SplitPrint]")
+{
+    std::array<std::vector<std::string>, 2> heads;
+    GCodeProcessorResult                    result;
+    export_split(make_cube(300., 30., 1.), heads, result);
+    REQUIRE(result.split_one_head_time > 0.f);
+    CHECK(result.split_stopped_layers == 0);
+    CHECK(result.print_statistics.modes[0].time < 0.8f * result.split_one_head_time);
+}
+
+TEST_CASE("Turning timed layers off brings back stops in the middle of layers", "[SplitPrint]")
+{
+    DynamicPrintConfig stops;
+    stops.set_deserialize_strict({{"split_timed_layers", "0"}});
+    std::array<std::vector<std::string>, 2> heads;
+    GCodeProcessorResult                    result;
+    export_split(make_cube(40., 40., 1.), heads, result, stops);
+    for (int h = 0; h < 2; ++h) {
+        CHECK(count_starting(heads[h], "; SPLITPRINT_TIMED ") == 0);
+        CHECK(std::any_of(heads[h].begin(), heads[h].end(), is_mid_layer_sync));
+    }
+}
+
+TEST_CASE("A preview over its move budget keeps every n-th layer and the whole print time", "[SplitPrint]")
+{
+    DynamicPrintConfig config = split_config(true);
+    Print              print;
+    Model              model;
+    init_print({cube(40)}, print, model, config);
+    model.center_instances_around_point(Vec2d(200., 200.));
+    DynamicPrintConfig full = DynamicPrintConfig::full_print_config();
+    full.apply(config);
+    print.apply(model, full);
+    print.process();
+    ScopedTemporaryFile                temp(".gcode");
+    std::array<std::vector<double>, 2> times;
+    for (int h = 0; h < 2; ++h) {
+        GCode gcode;
+        times[h] = SplitPrint::export_head_stream(print, gcode, SplitPrint::head_gcode_path(temp.string(), h), h);
+    }
+    const std::shared_ptr<SplitPrint::HeadsPreview> heads = SplitPrint::schedule_head_streams(print, temp.string(), std::move(times), true);
+    // Both previews come from the same scheduled files: one keeps every move, one an eighth of them.
+    // Layer 0 is the start G-code, which is always shown.
+    GCodeProcessorResult all, thinned;
+    SplitPrint::merge_head_preview(print, heads, &all, size_t(1) << 30);
+    SplitPrint::merge_head_preview(print, heads, &thinned, all.moves.size() / 8);
+    for (int h = 0; h < 2; ++h)
+        boost::filesystem::remove(SplitPrint::head_gcode_path(temp.string(), h));
+
+    CHECK(all.split_preview_layer_step == 1);
+    const int step = thinned.split_preview_layer_step;
+    REQUIRE(step > 1);
+    CHECK(thinned.moves.size() < all.moves.size() / 2);
+    for (const GCodeProcessorResult::MoveVertex &m : thinned.moves)
+        if (m.type == EMoveType::Extrude && m.layer_id > 0 && (m.layer_id - 1) % step != 0) {
+            FAIL("an extrusion of layer " << m.layer_id << " is shown");
+            break;
+        }
+    // The layers left out still take their time.
+    const float time = all.print_statistics.modes[0].time;
+    REQUIRE(time > 0.f);
+    CHECK_THAT(thinned.print_statistics.modes[0].time, WithinRel(time, 1e-4f));
 }

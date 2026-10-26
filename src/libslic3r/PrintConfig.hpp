@@ -1868,6 +1868,9 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionStrings,             imex_mode_gcodes))
     // SPLITPRINT: closest the two nozzles may come along the split axis.
     ((ConfigOptionFloat,               split_gantry_min_gap))
+    // SPLITPRINT: run each layer without stops, kept apart by the move times.
+    ((ConfigOptionBool,                split_timed_layers))
+    ((ConfigOptionPercent,             split_timing_margin))
     ((ConfigOptionBool,                single_extruder_multi_material_priming))
     ((ConfigOptionEnum<ToolChangeOrderingType>, toolchange_ordering))
     ((ConfigOptionString,              toolchange_cyclic_order))

@@ -366,6 +366,7 @@ private:
     bool m_contained_in_bed{ true };
 mutable bool m_no_render_path { false };
     bool m_split_print{ false }; // SPLITPRINT: the preview holds both heads of a split print
+    float m_split_one_head_time{ 0.f }; // SPLITPRINT: what one head alone would take
     bool m_is_dark = false;
 
     bool  m_belt_view_enabled = false;

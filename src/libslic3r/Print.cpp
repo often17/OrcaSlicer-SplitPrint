@@ -102,6 +102,7 @@
 #include <boost/regex.hpp>
 #include <boost/nowide/fstream.hpp>
 
+#include <future> // SPLITPRINT
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
@@ -297,6 +298,9 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "deretraction_speed",
         "close_fan_the_first_x_layers",
         "machine_end_gcode",
+        // SPLITPRINT: only change how the two head streams are scheduled.
+        "split_timed_layers",
+        "split_timing_margin",
         "printing_by_object_gcode",
         "filament_end_gcode",
         "post_process",
@@ -4029,7 +4033,7 @@ std::string Print::export_gcode(const std::string& path_template, GCodeProcessor
     // SPLITPRINT: each head's own stream first, so the combined export below, which the
     // preview and the print statistics come from, runs last.
     const bool split = SplitPrint::print_is_split(*this);
-    std::array<GCodeProcessorResult, 2> head_results;
+    std::array<std::vector<double>, 2> head_times; // seconds per line of each head's file
     // GCode::do_export() skips a file that exists once the export step is done, and the first
     // head's export marks it done. So unless all three files are current, remove the old ones:
     // otherwise the second head and the combined file would keep what an earlier slice wrote.
@@ -4042,18 +4046,40 @@ std::string Print::export_gcode(const std::string& path_template, GCodeProcessor
         for (int head = 0; head < 2; ++head)
             boost::filesystem::remove(SplitPrint::head_gcode_path(path, head), ec);
     }
-    if (split && !split_up_to_date)
+    if (split && !split_up_to_date) {
+        // The three exports compute the same seams once; each frees the export before it first.
+        std::unique_ptr<GCode> previous;
         for (int head = 0; head < 2; ++head) {
-            GCode head_gcode;
-            head_gcode.set_gcode_offset_with_imex_shift(origin(0), origin(1), imex_off.x(), imex_off.y());
-            head_gcode.set_split_head(head);
-            head_gcode.do_export(this, SplitPrint::head_gcode_path(path, head).c_str(), &head_results[head], nullptr);
+            auto head_gcode = std::make_unique<GCode>();
+            if (previous)
+                head_gcode->take_seam_placer(*previous);
+            previous.reset();
+            head_gcode->set_gcode_offset_with_imex_shift(origin(0), origin(1), imex_off.x(), imex_off.y());
+            head_times[head] = SplitPrint::export_head_stream(*this, *head_gcode, SplitPrint::head_gcode_path(path, head), head);
+            previous         = std::move(head_gcode);
         }
+        gcode->take_seam_placer(*previous);
+    }
     gcode->set_gcode_offset_with_imex_shift(origin(0), origin(1), imex_off.x(), imex_off.y());
-    gcode->do_export(this, path.c_str(), result, thumbnail_cb);
-    if (split && !split_up_to_date)
-        SplitPrint::finish_head_streams(*this, path, {&head_results[0], &head_results[1]}, result);
+    std::shared_ptr<SplitPrint::HeadsPreview> heads;
+    if (split && !split_up_to_date) {
+        // SPLITPRINT: schedule the heads' files while the combined preview file is written. The
+        // future waits for the scheduling even when the export throws. The preview shows the
+        // heads' moves, so the combined export keeps none.
+        SplitPrint::drop_export_moves(*gcode);
+        std::future<std::shared_ptr<SplitPrint::HeadsPreview>> scheduled = std::async(std::launch::async, [&] {
+            return SplitPrint::schedule_head_streams(*this, path, std::move(head_times), result != nullptr);
+        });
+        gcode->do_export(this, path.c_str(), result, thumbnail_cb);
+        heads = scheduled.get();
+    } else
+        gcode->do_export(this, path.c_str(), result, thumbnail_cb);
     gcode->export_layer_filaments(result);
+    if (heads) {
+        // SPLITPRINT: the preview of a large print needs the memory the combined export holds.
+        gcode.reset();
+        SplitPrint::merge_head_preview(*this, heads, result);
+    }
     //BBS
     if (result != nullptr) {
         result->conflict_result = m_conflict_result;

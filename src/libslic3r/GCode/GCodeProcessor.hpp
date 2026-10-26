@@ -363,6 +363,10 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         // one head alone would take for the same print (0 when not a split print).
         bool  split_print{ false };
         float split_one_head_time{ 0.f };
+        // SPLITPRINT: layers that could not be printed without stopping both heads in the middle.
+        int   split_stopped_layers{ 0 };
+        // SPLITPRINT: the preview of a huge split print keeps every n-th layer (the files keep all).
+        int   split_preview_layer_step{ 1 };
         SettingsIds settings_ids;
         size_t filaments_count;
         bool backtrace_enabled;
@@ -478,6 +482,8 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
             machine_frame_transform_active = std::forward<Other>(other).machine_frame_transform_active;
             split_print = std::forward<Other>(other).split_print;
             split_one_head_time = std::forward<Other>(other).split_one_head_time;
+            split_stopped_layers = std::forward<Other>(other).split_stopped_layers;
+            split_preview_layer_step = std::forward<Other>(other).split_preview_layer_step;
 #if ENABLE_GCODE_VIEWER_STATISTICS
             time = std::forward<Other>(other).time;
 #endif
@@ -1140,6 +1146,14 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
                 m_move_id.reset();
                 m_custom_gcode_per_print_z_id.reset();
             }
+
+            // SPLITPRINT: the move it holds, which must stay in the list, and its place once
+            // `count` moves before it have left the list.
+            std::optional<size_t> move_id() const { return m_move_id; }
+            void on_moves_taken(size_t count) {
+                if (m_move_id.has_value())
+                    *m_move_id -= count;
+            }
         };
 
 #if ENABLE_GCODE_VIEWER_DATA_CHECKING
@@ -1218,6 +1232,17 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         };
         // For a support, the object instance only.
         using MassLocator = std::function<MassLocation(const Vec3d &point, bool support)>;
+
+        // SPLITPRINT: a split print's exports can hold more moves than fit in memory. With a sink,
+        // finished moves are handed to `take` in order and leave the result, which keeps only the
+        // latest ones. Post-processing renumbers the lines of an exported file: `renumbered` then
+        // gets the original -> final line ids, which the moves still in the result already have.
+        // Nothing then shows the file's text, so the result keeps no lines_ends.
+        struct MoveSink
+        {
+            std::function<void(const GCodeProcessorResult::MoveVertex* begin, const GCodeProcessorResult::MoveVertex* end)> take;
+            std::function<void(const std::vector<std::pair<size_t, size_t>>& lines_map)> renumbered;
+        };
 
     private:
         CommandProcessor m_command_processor;
@@ -1348,6 +1373,19 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         CpColor m_cp_color;
         SeamsDetector m_seams_detector;
         OptionsZCorrector m_options_z_corrector;
+        // SPLITPRINT: see set_move_sink(). Of the moves taken, check_multi_extruder_gcode_valid()
+        // needs only the box each object's extrusions of each filament span, and their top.
+        struct TakenPathPos
+        {
+            bool  has_pos{ false };
+            Point min, max;
+            float max_print_z{ 0.0f };
+            float max_print_z_custom{ 0.0f };
+        };
+        MoveSink m_move_sink;
+        size_t m_moves_taken{ 0 };
+        bool   m_sink_drops_lines{ false }; // only the moves are read: keep no per-line tables
+        std::map<int, std::map<int, TakenPathPos>> m_taken_path_pos; // object_id, filament_id
         size_t m_last_default_color_id;
         bool m_detect_layer_based_on_tag {false};
         int m_seams_count;
@@ -1465,6 +1503,9 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
 
         //BBS: set offset for gcode writer
         void set_xy_offset(double x, double y) { m_x_offset = x; m_y_offset = y; }
+
+        // SPLITPRINT: see MoveSink.
+        void set_move_sink(MoveSink sink) { m_move_sink = std::move(sink); }
 
         // Orca: if true, only change new layer if ETags::Layer_Change occurs
         // otherwise when we got a lift of z during extrusion, a new layer will be added
@@ -1725,6 +1766,10 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         void process_filaments(CustomGCode::Type code);
 
         void calculate_time(GCodeProcessorResult& result, size_t keep_last_n_blocks = 0, float additional_time = 0.0f, EMoveType target_move_type = EMoveType::Noop, bool is_final = false);
+        // SPLITPRINT: hands the moves nothing changes any more to the move sink.
+        void take_finished_moves();
+        // Where check_multi_extruder_gcode_valid() places a move.
+        Vec3d check_position(const GCodeProcessorResult::MoveVertex& move) const;
 
         // Simulates firmware st_synchronize() call
         void simulate_st_synchronize(float additional_time = 0.0f, EMoveType target_move_type = EMoveType::Noop);

@@ -79,6 +79,39 @@ class CheckTest(unittest.TestCase):
         t1 = "G1 X50 Y5\nG1 X100 F7200 ; SPLITPRINT park before the first layer\n; SPLITPRINT_SYNC L0\nG1 X80 E1\n"
         self.assertEqual(self.run_pair(t0, t1), 0)
 
+    # Timed intervals: T0 goes to X44 at 10 mm/s (about 3.4 s), prints, and comes back to X20;
+    # T1 waits at X90, then comes to X50, only 6 mm from where T0 was (gap 10).
+    T0_TIMED = ("G1 X10\n; SPLITPRINT_SYNC L0\n; SPLITPRINT_TIMED 8\nSET_VELOCITY_LIMIT ACCEL=1000\n"
+                "G1 X44 F600\nG1 Y10 E1\nG1 X20 F600\n; SPLITPRINT_SYNC L1\n")
+
+    def t1_timed(self, wait_ms):
+        return (f"G1 X90\n; SPLITPRINT_SYNC L0\n; SPLITPRINT_TIMED 9\nG4 P{wait_ms}\n"
+                "SET_VELOCITY_LIMIT ACCEL=1000\nG1 X50 F600\nG1 Y10 E1\n; SPLITPRINT_SYNC L1\n")
+
+    def test_timed_turns_with_time_to_spare_pass(self):
+        # T0 is back at X20 after about 6.8 s; T1 reaches X50 after its 9 s wait and 4 s travel,
+        # more than the 0.5 s + 10 % margin later.
+        self.assertEqual(self.run_pair(self.T0_TIMED, self.t1_timed(9000)), 0)
+
+    def test_timed_turns_without_time_to_spare_fail(self):
+        # Same moves, but T1 only waits 0.5 s: it reaches X50 while T0 is still near X44.
+        self.assertEqual(self.run_pair(self.T0_TIMED, self.t1_timed(500)), 1)
+
+    def test_timed_interval_on_one_head_only_fails(self):
+        t1 = self.t1_timed(9000).replace("; SPLITPRINT_TIMED 9\n", "")
+        self.assertEqual(self.run_pair(self.T0_TIMED, t1), 1)
+
+    def test_time_model_follows_klipper_trapezoids(self):
+        # 100 mm at 100 mm/s with 1000 mm/s^2 and no cruise-ratio cap: 0.1 s up, 0.8 s cruise, 0.1 s down.
+        moves = [check.Move(1, 0, 100, dist=100.0, axes=(1.0, 0.0, 0.0), feed=100.0, accel=1000.0, accel_to_decel=1000.0)]
+        check.plan_times(moves)
+        self.assertAlmostEqual(moves[0].time, 1.1, places=6)
+        # Two collinear moves flow into each other at full speed: no stop in between.
+        moves = [check.Move(1, 0, 50, dist=50.0, axes=(1.0, 0.0, 0.0), feed=100.0, accel=1000.0, accel_to_decel=1000.0),
+                 check.Move(2, 50, 100, dist=50.0, axes=(1.0, 0.0, 0.0), feed=100.0, accel=1000.0, accel_to_decel=1000.0)]
+        check.plan_times(moves)
+        self.assertAlmostEqual(moves[0].time + moves[1].time, 1.1, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

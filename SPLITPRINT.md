@@ -27,8 +27,11 @@ join in the middle through **interleaved fingers of variable length**. A
   (verified in the Moonraker docs). Each chunk ends with `M400`. When both calls have
   returned, the barrier is passed and it sends the next pair. If either side errors,
   it calls `/printer/emergency_stop` on **both**.
-  - Every sync drains the motion queue (a short stop), so the scheduler must use as
-    few syncs as possible: layer ends and no-go-zone handoffs only.
+  - Every sync drains the motion queue (a short stop), and a nozzle standing still
+    over the part leaves a mark. So syncs go only at layer changes: within a layer the
+    heads are kept apart by time (`split_timed_layers`, `; SPLITPRINT_TIMED`), and any
+    wait happens at the layer start. The coordinator stops at the next layer change if
+    a head drifts off the slicer's timing.
 - Klipper has no command that waits for another printer. Don't try to build the
   barrier inside Klipper macros.
 
@@ -83,12 +86,12 @@ supports that cross the split (each support goes to the side it stands on).
 | Piece | Where |
 |---|---|
 | Split + fingers geometry (pure) | `src/libslic3r/SplitPrint/Splitter.{hpp,cpp}` |
-| One head vs two time | merged preview timeline in `SplitPrint/Export.cpp`, notification in `Plater.cpp` |
+| One head vs two time | merged preview timeline in `SplitPrint/Export.cpp`, legend rows in `GCodeViewer.cpp`, notification in `Plater.cpp` |
 | Pipeline hook | `apply_split_print()` next to `apply_mm_segmentation` in `src/libslic3r/PrintObjectSlice.cpp` |
 | Options | `PrintConfig.{hpp,cpp}`, `Preset.cpp` lists, `PrintObject::invalidate_state_by_config_options`, `Tab.cpp` |
 | Two streams + export | `src/libslic3r/SplitPrint/Export.{hpp,cpp}`, hooks in `Print::export_gcode`, `GCode.cpp`, `BackgroundSlicingProcess.cpp` |
 | Near / far phases (parallel printing) | `src/libslic3r/SplitPrint/Phases.{hpp,cpp}`, island loop in `GCode::process_layer` |
-| Scheduler + in-slicer check | `src/libslic3r/SplitPrint/Scheduler.{hpp,cpp}` |
+| Scheduler (timed layers, fallback syncs) + in-slicer check | `src/libslic3r/SplitPrint/Scheduler.{hpp,cpp}` |
 | Preview: second head marker | `GCodeViewer::render_markers` |
 | Independent checker | `tools/splitprint/check.py` |
 | Klipper coordinator (host) | `tools/splitprint/run_dual.py` (runs `check.py` first, refuses to start on failure) |
@@ -133,4 +136,12 @@ supports that cross the split (each support goes to the side it stands on).
       pins come from Klipper's Octopus Pro v1.1 and EBB v1.2 samples, not yet run on
       the boards). Run: `run_dual.py part.T0.gcode part.T1.gcode --t0 URL --t1 URL`,
       or `--dry-run` to check only.
+- [x] Layers without stops in the middle: heads kept apart by time, waits only at the
+      layer start (300 mm bar: 2403 s with two heads vs 4739 s with one, 0 mid-layer
+      stops). `check.py` has a Klipper-style time model; `run_dual.py` stops (exit 3)
+      at a layer change when a head drifts off the timing. The preview legend shows the
+      two-head and one-head times.
+- [x] Large parts fit in memory: the processor hands moves to a sink, the scheduler streams a
+      layer at a time, the preview keeps every n-th layer past a memory budget (600 mm cube,
+      3000 layers: about 20 GB peak, G-code unchanged).
 - [ ] Real-printer dry run (no filament, heads far apart first)

@@ -407,3 +407,88 @@ TEST_CASE("Scheduling reads and writes G-code numbers with a point in any locale
     CHECK(std::find(r.lines[0].begin(), r.lines[0].end(), "G1 X0.000 F12000 ; SPLITPRINT park before the first layer") != r.lines[0].end());
     CHECK(check_streams(r.lines, lane_params()).empty());
 }
+
+namespace {
+
+ScheduleParams timed_params()
+{
+    ScheduleParams p = lane_params();
+    p.timed          = true;
+    p.margin_abs     = 0.5;
+    p.margin_rel     = 0.1;
+    return p;
+}
+
+size_t count_with(const std::vector<std::string> &lines, const char *text)
+{
+    return size_t(std::count_if(lines.begin(), lines.end(), [text](const std::string &l) { return l.find(text) != std::string::npos; }));
+}
+
+} // namespace
+
+TEST_CASE("Timed layers hand over the middle without a stop", "[SplitPrint]")
+{
+    // T0 prints at the split line first, then far from it; T1 far first, then at the split line.
+    // Every line takes 1 s, so T0 has left the middle long before T1 gets there.
+    const std::array<HeadStream, 2> in{stream_mm(3, {395., 300., 250., 200.}), stream_mm(3, {700., 650., 600., 405.})};
+    const ScheduleResult            r = schedule_streams(in, timed_params());
+    CHECK(r.timed_layers == 3);
+    CHECK(r.stopped_layers == 0);
+    for (int h = 0; h < 2; ++h) {
+        CHECK(count_with(r.lines[h], "; SPLITPRINT_TIMED ") == 3);
+        // Only the layer and shared-Z syncs: none inside a layer.
+        CHECK(count_with(r.lines[h], "; SPLITPRINT_SYNC ") == 6);
+    }
+    const std::vector<std::string> errors = check_streams(r.lines, timed_params(), &r.line_time);
+    INFO((errors.empty() ? std::string() : errors.front()));
+    CHECK(errors.empty());
+    // Without the move times nothing proves a timed layer safe.
+    CHECK_FALSE(check_streams(r.lines, timed_params()).empty());
+}
+
+TEST_CASE("A head that would meet the other waits at the start of the layer", "[SplitPrint]")
+{
+    // T0 starts right at the split line, and T1's only work is right past it: one of them goes
+    // first and the other waits, before doing anything on the layer.
+    const std::array<HeadStream, 2> in{stream_mm(1, {395., 200.}), stream_mm(1, {405.})};
+    const ScheduleResult            r = schedule_streams(in, timed_params());
+    REQUIRE(r.timed_layers == 1);
+    CHECK(count_with(r.lines[0], "G4 P") + count_with(r.lines[1], "G4 P") == 1);
+    const int waiting = count_with(r.lines[0], "G4 P") == 1 ? 0 : 1;
+    const std::vector<std::string> &w = r.lines[waiting];
+    const auto timed = std::find_if(w.begin(), w.end(), [](const std::string &l) { return l.rfind("; SPLITPRINT_TIMED", 0) == 0; });
+    REQUIRE(timed != w.end());
+    // Right after the line that opens the interval, or after a travel out of the way.
+    const auto wait = std::find_if(timed, w.end(), [](const std::string &l) { return l.rfind("G4 P", 0) == 0; });
+    CHECK(std::none_of(timed, wait, [](const std::string &l) { return l.find(" E") != std::string::npos; }));
+    CHECK(check_streams(r.lines, timed_params(), &r.line_time).empty());
+}
+
+TEST_CASE("A head running later than the timing margin allows fails the check", "[SplitPrint]")
+{
+    const std::array<HeadStream, 2> in{stream_mm(1, {395., 200.}), stream_mm(1, {405.})};
+    const ScheduleResult            r = schedule_streams(in, timed_params());
+    REQUIRE(check_streams(r.lines, timed_params(), &r.line_time).empty());
+    // The head that goes first takes twice as long: seconds late, more than the margin, while
+    // the other comes in on time.
+    const int first = count_with(r.lines[0], "G4 P") == 0 ? 0 : 1;
+    std::array<std::vector<double>, 2> slow = r.line_time;
+    for (double &t : slow[first])
+        t *= 2.;
+    const std::vector<std::string> errors = check_streams(r.lines, timed_params(), &slow);
+    REQUIRE_FALSE(errors.empty());
+    CHECK(errors.front().find("closer than") != std::string::npos);
+}
+
+TEST_CASE("Retraction for the layer change is undone before the next layer extrudes", "[SplitPrint]")
+{
+    ScheduleParams p = timed_params();
+    p.retract_length = {0.8, 0.8};
+    const std::array<HeadStream, 2> in{stream_mm(3, {100.}), stream_mm(3, {700.})};
+    const ScheduleResult            r = schedule_streams(in, p);
+    for (int h = 0; h < 2; ++h) {
+        // Three layer ends, two following layers that extrude.
+        CHECK(count_with(r.lines[h], "SPLITPRINT retract for the layer change") == 3);
+        CHECK(count_with(r.lines[h], "SPLITPRINT unretract") == 2);
+    }
+}

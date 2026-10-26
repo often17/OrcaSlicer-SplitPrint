@@ -7096,6 +7096,26 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(60.));
 
+    def = this->add("split_timed_layers", coBool);
+    def->label = L("Print layers without stops");
+    def->tooltip = L("For two heads printing one object: each head prints a whole layer without stopping. The heads take "
+                     "turns near the middle by the estimated time of every move, with the timing margin below to spare. "
+                     "When off, both heads stop and wait for each other whenever they hand over the middle, which does not "
+                     "depend on timing but leaves the nozzles standing over the part.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("split_timing_margin", coPercent);
+    def->label = L("Timing margin");
+    def->tooltip = L("For two heads printing one object, when layers print without stops: how far one head may run ahead "
+                     "of the other, as a share of the time since the layer started, and the heads still stay apart. "
+                     "Half a second is always added. A larger margin is safer but makes heads wait longer at layer changes.");
+    def->sidetext = "%";
+    def->min = 0;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(10));
+
     def = this->add("imex_nozzle_clearance_x", coFloat);
     def->label = L("Nozzle Clearance X");
     def->tooltip = L("Distance (mm) from the nozzle to the collision-side carriage edge in X. Used to calculate the width of the collision exclusion strip at each X boundary.");

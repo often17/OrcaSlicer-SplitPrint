@@ -1409,7 +1409,8 @@ void GCodeViewer::load_as_gcode(const GCodeProcessorResult& gcode_result, const 
     // below still reads print.config(), which Plater::load_gcode() fills from the file's own
     // config block (GCodeProcessor::export_config_for_render).
     m_belt_view_enabled = gcode_result.belt_tilt_angle > 0.f;
-    m_split_print       = gcode_result.split_print; // SPLITPRINT
+    m_split_print         = gcode_result.split_print; // SPLITPRINT
+    m_split_one_head_time = gcode_result.split_one_head_time;
     m_belt_angle_deg    = gcode_result.belt_tilt_angle;
 
     const bool current_top_layer_only = m_viewer.is_top_layer_only_view_range();
@@ -1959,6 +1960,7 @@ void GCodeViewer::reset()
     m_last_result_id = -1;
     m_belt_layer_zs.clear();
     m_split_print    = false; // SPLITPRINT
+    m_split_one_head_time = 0.f;
     //BBS: add only gcode mode
     m_only_gcode_in_preview = false;
 
@@ -5625,6 +5627,23 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
     imgui.text(total_str + ":");
     ImGui::SameLine(max_len);
     imgui.text(short_time(get_time_dhms(time_mode.time)));
+    // SPLITPRINT: the times above are with both heads; also show what one head alone would take.
+    if (m_split_print && m_split_one_head_time > 0.f) {
+        ImGui::Dummy({ window_padding, window_padding });
+        ImGui::SameLine();
+        imgui.text(_u8L("One head alone") + ":");
+        ImGui::SameLine(max_len);
+        imgui.text(short_time(get_time_dhms(m_split_one_head_time)));
+        ImGui::Dummy({ window_padding, window_padding });
+        ImGui::SameLine();
+        imgui.text(_u8L("Saved by two heads") + ":");
+        ImGui::SameLine(max_len);
+        const float saved = m_split_one_head_time - time_mode.time;
+        if (saved > 0.f)
+            imgui.text(short_time(get_time_dhms(saved)) + " (" + std::to_string(std::lround(100.f * saved / m_split_one_head_time)) + "%)");
+        else
+            imgui.text(_u8L("nothing, one head is faster"));
+    }
 
     auto show_mode_button = [this, &imgui, can_show_mode_button](const std::string& label, libvgcode::ETimeMode mode) {
         if (can_show_mode_button(mode)) {

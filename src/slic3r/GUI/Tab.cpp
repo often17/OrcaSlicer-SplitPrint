@@ -6087,6 +6087,8 @@ if (is_marlin_flavor)
         // SPLITPRINT
         optgroup = page->new_optgroup(L("Two heads, one object"), L"param_advanced");
         optgroup->append_single_option_line("split_gantry_min_gap");
+        optgroup->append_single_option_line("split_timed_layers");
+        optgroup->append_single_option_line("split_timing_margin");
 
         // IDEX/IQEX (IMEX) parallel printing configuration
         optgroup = page->new_optgroup(L("IDEX/IQEX Configuration"), L"param_advanced");
@@ -6789,6 +6791,8 @@ void TabPrinter::toggle_options()
         toggle_option("imex_viz_theme",   is_imex);
         toggle_option("imex_firmware_managed_zones", is_imex);
         if (m_imex_modes_ctrl) m_imex_modes_ctrl->set_applicable(is_imex);
+        // SPLITPRINT
+        toggle_option("split_timing_margin", m_config->opt_bool("split_timed_layers"));
 
         // IDEX/IQEX: the tool_layout dropdown carries 4 corner values
         // (front-left / front-right / rear-left / rear-right) in storage, but front/rear

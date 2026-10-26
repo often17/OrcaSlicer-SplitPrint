@@ -1607,7 +1607,7 @@ static std::vector<std::string> s_Preset_printer_options {
     "is_imex", "imex_firmware_managed_zones",
     "imex_gantry_count", "imex_tools_per_gantry", "imex_tool_layout",
     "imex_nozzle_clearance_x", "imex_nozzle_clearance_y", "imex_carriage_margin", "imex_viz_theme",
-    "split_gantry_min_gap",
+    "split_gantry_min_gap", "split_timed_layers", "split_timing_margin",
     "imex_mode_names", "imex_mode_active_tools", "imex_mode_gcodes",
     // Multi-nozzle count + pre-heat model printer options
     "extruder_max_nozzle_count", "group_algo_with_time", "enable_pre_heating", "hotend_heating_rate", "hotend_cooling_rate",

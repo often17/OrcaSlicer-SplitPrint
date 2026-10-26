@@ -263,6 +263,10 @@ public:
     void            export_layer_filaments(GCodeProcessorResult* result);
     // SPLITPRINT: write only head `head`'s work (0 or 1), with sync markers; -1 writes everything.
     void            set_split_head(int head) { m_split_head = head; }
+    // SPLITPRINT: lets the split export take the processor's moves as they are finished.
+    void            set_move_sink(GCodeProcessor::MoveSink sink) { m_processor.set_move_sink(std::move(sink)); }
+    // SPLITPRINT: the split export writes three files of one print, which share the seams.
+    void            take_seam_placer(GCode &other) { m_seam_placer = std::move(other.m_seam_placer); m_seam_placer_ready = true; }
     //BBS: set offset for gcode writer
     void set_gcode_offset(double x, double y) { m_writer.set_xy_offset(x, y); m_processor.set_xy_offset(x, y);}
     // IMEX firmware-managed slice: writer offset is augmented by the IMEX shift so the
@@ -892,6 +896,7 @@ protected:
     std::string m_imex_parallel_mode;
     // SPLITPRINT: the head whose stream this export writes, -1 for the combined preview stream.
     int m_split_head = -1;
+    bool m_seam_placer_ready = false; // SPLITPRINT: take_seam_placer() set it
     // SPLITPRINT: split line of each object, for printing a layer in near / far phases.
     std::map<const PrintObject*, SplitPrint::SplitParams> m_split_params;
     // SPLITPRINT: the object's split in a head's stream, nullptr in the combined stream or when the object is not split.
